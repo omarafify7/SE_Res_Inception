@@ -1,14 +1,19 @@
 """
-SE-Res-Inception: A Novel Hybrid Architecture
-==============================================
+SE-Res-Inception V2: Improved Generalization Architecture
+==========================================================
 
-This module implements a modified GoogLeNet (Inception V1) with two modern "twists":
+This module implements a modified GoogLeNet (Inception V1) with modern techniques
+to combat overfitting in low-data regimes like CIFAR-100.
 
-1. TWIST 1 (SE): Squeeze-and-Excitation blocks applied to EACH inception branch
-   before concatenation, enabling channel-wise attention per branch.
+ARCHITECTURE CHANGES (V2):
 
-2. TWIST 2 (Residual): Global residual connections around each Inception module
-   with 1x1 projection convolutions when channel dimensions mismatch.
+1. SE OPTIMIZATION: Single SE block applied AFTER branch concatenation
+   (more efficient than per-branch SE, enables global feature recalibration)
+
+2. REGULARIZATION: Dropout layer after SE block within each Inception module
+
+3. STOCHASTIC DEPTH: Randomly drops residual paths during training
+   (similar to DropPath in Vision Transformers)
 
 Author: Senior Computer Vision Research Engineer
 Target: CIFAR-100 (32x32) | Hardware: NVIDIA RTX 5070 Ti with AMP
@@ -17,6 +22,7 @@ Target: CIFAR-100 (32x32) | Hardware: NVIDIA RTX 5070 Ti with AMP
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Optional
 
 
 class SEBlock(nn.Module):
@@ -29,17 +35,18 @@ class SEBlock(nn.Module):
     3. Scale: Multiply input channels by their weights
     
     Args:
-        channels (int): Number of input/output channels
-        reduction (int): Reduction ratio for the bottleneck (default: 16)
+        channels: Number of input/output channels
+        reduction: Reduction ratio for the bottleneck (default: 16)
     """
     
-    def __init__(self, channels: int, reduction: int = 16):
+    def __init__(self, channels: int, reduction: int = 16) -> None:
         super().__init__()
+        reduced_channels = max(channels // reduction, 8)  # Ensure minimum of 8 channels
         self.squeeze = nn.AdaptiveAvgPool2d(1)
         self.excitation = nn.Sequential(
-            nn.Linear(channels, channels // reduction, bias=False),
+            nn.Linear(channels, reduced_channels, bias=False),
             nn.ReLU(inplace=True),
-            nn.Linear(channels // reduction, channels, bias=False),
+            nn.Linear(reduced_channels, channels, bias=False),
             nn.Sigmoid()
         )
     
@@ -51,6 +58,43 @@ class SEBlock(nn.Module):
         excitation = self.excitation(squeeze).view(batch, channels, 1, 1)
         # Scale: (B, C, H, W) * (B, C, 1, 1) -> (B, C, H, W)
         return x * excitation
+
+
+class DropPath(nn.Module):
+    """
+    Stochastic Depth (Drop Path) for residual connections.
+    
+    During training, randomly drops the entire residual branch with probability `drop_prob`,
+    forcing the network to rely on the skip connection. This provides strong regularization
+    and is widely used in Vision Transformers (ViT, DeiT, Swin).
+    
+    During inference, the full path is always used (with appropriate scaling).
+    
+    Args:
+        drop_prob: Probability of dropping the path (default: 0.0)
+    """
+    
+    def __init__(self, drop_prob: float = 0.0) -> None:
+        super().__init__()
+        self.drop_prob = drop_prob
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.drop_prob == 0.0 or not self.training:
+            return x
+        
+        # Survival probability
+        keep_prob = 1 - self.drop_prob
+        
+        # Create binary mask: shape (batch_size, 1, 1, 1) for broadcasting
+        shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+        random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
+        binary_mask = torch.floor(random_tensor)
+        
+        # Scale output during training to maintain expected value
+        return x / keep_prob * binary_mask
+    
+    def extra_repr(self) -> str:
+        return f'drop_prob={self.drop_prob:.3f}'
 
 
 class InceptionBranch(nn.Module):
@@ -66,10 +110,10 @@ class InceptionBranch(nn.Module):
     Each branch includes BatchNorm and ReLU after each convolution.
     
     Args:
-        in_channels (int): Input channel count
-        out_channels (int): Output channel count for this branch
-        branch_type (str): One of '1x1', '3x3', '5x5', 'pool'
-        reduce_channels (int): Channels for 1x1 reduction (for 3x3/5x5 branches)
+        in_channels: Input channel count
+        out_channels: Output channel count for this branch
+        branch_type: One of '1x1', '3x3', '5x5', 'pool'
+        reduce_channels: Channels for 1x1 reduction (for 3x3/5x5 branches)
     """
     
     def __init__(
@@ -77,8 +121,8 @@ class InceptionBranch(nn.Module):
         in_channels: int, 
         out_channels: int, 
         branch_type: str,
-        reduce_channels: int = None
-    ):
+        reduce_channels: Optional[int] = None
+    ) -> None:
         super().__init__()
         self.branch_type = branch_type
         
@@ -100,7 +144,6 @@ class InceptionBranch(nn.Module):
             )
         
         elif branch_type == '5x5':
-            # Using two 3x3 convs instead of 5x5 for efficiency (same receptive field)
             self.branch = nn.Sequential(
                 nn.Conv2d(in_channels, reduce_channels, 1, bias=False),
                 nn.BatchNorm2d(reduce_channels),
@@ -126,27 +169,34 @@ class InceptionBranch(nn.Module):
 
 class ResInceptionBlock(nn.Module):
     """
-    SE-Res-Inception Block: The Core Module
+    SE-Res-Inception Block V2: Improved Core Module
     
-    This implements both "twists" of our architecture:
+    CHANGES FROM V1 (to reduce overfitting):
     
-    TWIST 1 (SE): Each of the 4 parallel branches has its own SE block applied
-                  BEFORE concatenation. This allows channel attention to be
-                  learned independently for each branch's feature type.
+    1. SE OPTIMIZATION: Single SE block applied AFTER concatenation
+       - More computationally efficient (1 SE vs 4 SE blocks)
+       - Enables global feature recalibration across all branches
+       - Applied BEFORE residual addition for cleaner gradients
     
-    TWIST 2 (Residual): A skip connection adds the input to the output.
-                        When channel dimensions mismatch, a 1x1 projection
-                        aligns the input channels to match the output.
+    2. DROPOUT: Applied after SE block for regularization
+       - Prevents co-adaptation of features
+       - Only active during training
+    
+    3. STOCHASTIC DEPTH: Randomly drops residual path during training
+       - Forces network to learn robust features through skip connection
+       - Drop probability can be scheduled (higher for deeper blocks)
     
     Args:
-        in_channels (int): Input channels to the block
-        ch1x1 (int): Output channels for 1x1 branch
-        ch3x3_reduce (int): Reduction channels for 3x3 branch
-        ch3x3 (int): Output channels for 3x3 branch
-        ch5x5_reduce (int): Reduction channels for 5x5 branch
-        ch5x5 (int): Output channels for 5x5 branch
-        pool_proj (int): Output channels for pooling branch projection
-        se_reduction (int): SE block reduction ratio (default: 16)
+        in_channels: Input channels to the block
+        ch1x1: Output channels for 1x1 branch
+        ch3x3_reduce: Reduction channels for 3x3 branch
+        ch3x3: Output channels for 3x3 branch
+        ch5x5_reduce: Reduction channels for 5x5 branch
+        ch5x5: Output channels for 5x5 branch
+        pool_proj: Output channels for pooling branch projection
+        se_reduction: SE block reduction ratio (default: 16)
+        dropout_prob: Dropout probability after SE (default: 0.2)
+        drop_path_prob: Stochastic depth probability (default: 0.0)
     """
     
     def __init__(
@@ -158,8 +208,10 @@ class ResInceptionBlock(nn.Module):
         ch5x5_reduce: int,
         ch5x5: int,
         pool_proj: int,
-        se_reduction: int = 16
-    ):
+        se_reduction: int = 16,
+        dropout_prob: float = 0.2,
+        drop_path_prob: float = 0.0
+    ) -> None:
         super().__init__()
         
         # Calculate total output channels (for residual projection)
@@ -171,16 +223,17 @@ class ResInceptionBlock(nn.Module):
         self.branch_5x5 = InceptionBranch(in_channels, ch5x5, '5x5', ch5x5_reduce)
         self.branch_pool = InceptionBranch(in_channels, pool_proj, 'pool')
         
-        # === TWIST 1: SE BLOCKS (one per branch, BEFORE concatenation) ===
-        # This is the key innovation: we apply channel attention to each
-        # branch independently, allowing the network to learn which channels
-        # are important within each receptive field size.
-        self.se_1x1 = SEBlock(ch1x1, se_reduction)
-        self.se_3x3 = SEBlock(ch3x3, se_reduction)
-        self.se_5x5 = SEBlock(ch5x5, se_reduction)
-        self.se_pool = SEBlock(pool_proj, se_reduction)
+        # === SE BLOCK (V2: Single block AFTER concatenation) ===
+        # This is more efficient and allows global recalibration
+        self.se = SEBlock(self.out_channels, se_reduction)
         
-        # === TWIST 2: RESIDUAL CONNECTION ===
+        # === DROPOUT (V2: Regularization after SE) ===
+        self.dropout = nn.Dropout2d(p=dropout_prob)
+        
+        # === STOCHASTIC DEPTH (V2: DropPath for residual) ===
+        self.drop_path = DropPath(drop_path_prob) if drop_path_prob > 0 else nn.Identity()
+        
+        # === RESIDUAL CONNECTION ===
         # Project input channels if they don't match output channels
         if in_channels != self.out_channels:
             self.residual_proj = nn.Sequential(
@@ -203,19 +256,21 @@ class ResInceptionBlock(nn.Module):
         out_5x5 = self.branch_5x5(x)
         out_pool = self.branch_pool(x)
         
-        # === TWIST 1: Apply SE attention to EACH branch individually ===
-        # This allows the network to weigh channels differently based on
-        # the receptive field that produced them
-        out_1x1 = self.se_1x1(out_1x1)
-        out_3x3 = self.se_3x3(out_3x3)
-        out_5x5 = self.se_5x5(out_5x5)
-        out_pool = self.se_pool(out_pool)
-        
         # === CONCATENATE along channel dimension ===
         out = torch.cat([out_1x1, out_3x3, out_5x5, out_pool], dim=1)
         
-        # === TWIST 2: Add residual connection ===
-        # Project identity if channel dimensions mismatch
+        # === V2: Apply SE attention AFTER concatenation ===
+        # Global recalibration across all branch features
+        out = self.se(out)
+        
+        # === V2: Apply Dropout for regularization ===
+        out = self.dropout(out)
+        
+        # === V2: Apply Stochastic Depth (DropPath) ===
+        # Randomly drops the entire transformed branch during training
+        out = self.drop_path(out)
+        
+        # === Add residual connection ===
         identity = self.residual_proj(identity)
         out = out + identity
         out = self.relu(out)
@@ -225,11 +280,12 @@ class ResInceptionBlock(nn.Module):
 
 class SEResInception(nn.Module):
     """
-    SE-Res-Inception: Full Network Architecture
+    SE-Res-Inception V2: Full Network Architecture with Improved Generalization
     
-    A modified GoogLeNet with:
-    - SE blocks on each inception branch (channel attention per receptive field)
-    - Residual connections around each inception block
+    Changes from V1:
+    - Single SE block per inception module (after concatenation)
+    - Dropout after SE for regularization
+    - Stochastic Depth with linearly increasing drop probability
     - NO auxiliary classifiers (residual connections make them obsolete)
     
     Optimized for CIFAR-100 (32x32 input) with adapted stem layer.
@@ -238,21 +294,31 @@ class SEResInception(nn.Module):
         Input (3, 32, 32)
         -> Stem: Conv 3x3/1 (64 channels, keep spatial)
         -> Inception blocks 1-2 (256 -> 480 channels)
-        -> MaxPool (16 -> 8)
+        -> MaxPool (32 -> 16)
         -> Inception blocks 3-4 (480 -> 512 channels)
         -> Inception blocks 5-7 (512 -> 832 channels)
-        -> MaxPool (8 -> 4)
+        -> MaxPool (16 -> 8)
         -> Inception blocks 8-9 (832 -> 1024 channels)
         -> Global Average Pool (1024, 1, 1)
         -> Dropout -> FC (num_classes)
     
     Args:
-        num_classes (int): Number of output classes (default: 100 for CIFAR-100)
-        dropout (float): Dropout probability before final FC (default: 0.4)
+        num_classes: Number of output classes (default: 100 for CIFAR-100)
+        dropout: Dropout probability before final FC (default: 0.5)
+        block_dropout: Dropout within inception blocks (default: 0.2)
+        drop_path_rate: Maximum stochastic depth rate (default: 0.2)
     """
     
-    def __init__(self, num_classes: int = 100, dropout: float = 0.4):
+    def __init__(
+        self, 
+        num_classes: int = 100, 
+        dropout: float = 0.5,
+        block_dropout: float = 0.2,
+        drop_path_rate: float = 0.2
+    ) -> None:
         super().__init__()
+        
+        self.num_blocks = 9  # Total inception blocks
         
         # === STEM LAYER ===
         # Adapted for CIFAR-100 32x32 input (no aggressive downsampling)
@@ -262,33 +328,63 @@ class SEResInception(nn.Module):
             nn.ReLU(inplace=True)
         )
         
+        # === STOCHASTIC DEPTH SCHEDULE ===
+        # Linear increase from 0 to drop_path_rate across blocks
+        # Earlier blocks have lower drop probability (more important features)
+        drop_rates = [drop_path_rate * i / (self.num_blocks - 1) for i in range(self.num_blocks)]
+        
         # === SE-RES-INCEPTION BLOCKS ===
         # Block configurations: (in_ch, 1x1, 3x3r, 3x3, 5x5r, 5x5, pool_proj)
-        # Designed to progressively increase channel count while maintaining
-        # a balance between different receptive field branches
         
         # Stage 1: 32x32 spatial, 64 -> 256 -> 480 channels
-        self.inception1 = ResInceptionBlock(64, 64, 96, 128, 16, 32, 32)    # out: 256
-        self.inception2 = ResInceptionBlock(256, 128, 128, 192, 32, 96, 64) # out: 480
+        self.inception1 = ResInceptionBlock(
+            64, 64, 96, 128, 16, 32, 32,
+            dropout_prob=block_dropout, drop_path_prob=drop_rates[0]
+        )  # out: 256
+        self.inception2 = ResInceptionBlock(
+            256, 128, 128, 192, 32, 96, 64,
+            dropout_prob=block_dropout, drop_path_prob=drop_rates[1]
+        )  # out: 480
         
         # Downsample: 32x32 -> 16x16
         self.pool1 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         
         # Stage 2: 16x16 spatial, 480 -> 512 -> 512 channels
-        self.inception3 = ResInceptionBlock(480, 192, 96, 208, 16, 48, 64)   # out: 512
-        self.inception4 = ResInceptionBlock(512, 160, 112, 224, 24, 64, 64)  # out: 512
+        self.inception3 = ResInceptionBlock(
+            480, 192, 96, 208, 16, 48, 64,
+            dropout_prob=block_dropout, drop_path_prob=drop_rates[2]
+        )  # out: 512
+        self.inception4 = ResInceptionBlock(
+            512, 160, 112, 224, 24, 64, 64,
+            dropout_prob=block_dropout, drop_path_prob=drop_rates[3]
+        )  # out: 512
         
         # Stage 3: 16x16 spatial, 512 -> 528 -> 832 channels
-        self.inception5 = ResInceptionBlock(512, 128, 128, 256, 24, 64, 80)  # out: 528 (adjusted from original)
-        self.inception6 = ResInceptionBlock(528, 256, 160, 320, 32, 128, 128) # out: 832
-        self.inception7 = ResInceptionBlock(832, 256, 160, 320, 32, 128, 128) # out: 832
+        self.inception5 = ResInceptionBlock(
+            512, 128, 128, 256, 24, 64, 80,
+            dropout_prob=block_dropout, drop_path_prob=drop_rates[4]
+        )  # out: 528
+        self.inception6 = ResInceptionBlock(
+            528, 256, 160, 320, 32, 128, 128,
+            dropout_prob=block_dropout, drop_path_prob=drop_rates[5]
+        )  # out: 832
+        self.inception7 = ResInceptionBlock(
+            832, 256, 160, 320, 32, 128, 128,
+            dropout_prob=block_dropout, drop_path_prob=drop_rates[6]
+        )  # out: 832
         
         # Downsample: 16x16 -> 8x8
         self.pool2 = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         
         # Stage 4: 8x8 spatial, 832 -> 1024 channels
-        self.inception8 = ResInceptionBlock(832, 256, 160, 320, 32, 128, 128)     # out: 832
-        self.inception9 = ResInceptionBlock(832, 384, 192, 384, 48, 128, 128)     # out: 1024
+        self.inception8 = ResInceptionBlock(
+            832, 256, 160, 320, 32, 128, 128,
+            dropout_prob=block_dropout, drop_path_prob=drop_rates[7]
+        )  # out: 832
+        self.inception9 = ResInceptionBlock(
+            832, 384, 192, 384, 48, 128, 128,
+            dropout_prob=block_dropout, drop_path_prob=drop_rates[8]
+        )  # out: 1024
         
         # === CLASSIFIER HEAD ===
         # Global Average Pooling -> Dropout -> Fully Connected
@@ -299,7 +395,7 @@ class SEResInception(nn.Module):
         # Initialize weights
         self._initialize_weights()
     
-    def _initialize_weights(self):
+    def _initialize_weights(self) -> None:
         """Initialize weights using Kaiming initialization for Conv/Linear layers"""
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -350,7 +446,7 @@ def get_model_summary(model: nn.Module, input_size: tuple = (1, 3, 32, 32)) -> N
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     
     print(f"{'='*60}")
-    print(f"SE-Res-Inception Model Summary")
+    print(f"SE-Res-Inception V2 Model Summary")
     print(f"{'='*60}")
     print(f"Total Parameters:     {total_params:,}")
     print(f"Trainable Parameters: {trainable_params:,}")
@@ -359,6 +455,7 @@ def get_model_summary(model: nn.Module, input_size: tuple = (1, 3, 32, 32)) -> N
     # Test forward pass
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = model.to(device)
+    model.eval()  # Set to eval mode for consistent output
     x = torch.randn(input_size).to(device)
     
     with torch.no_grad():
@@ -367,9 +464,29 @@ def get_model_summary(model: nn.Module, input_size: tuple = (1, 3, 32, 32)) -> N
     print(f"Input Shape:  {list(x.shape)}")
     print(f"Output Shape: {list(out.shape)}")
     print(f"{'='*60}")
+    
+    # Print regularization info
+    print(f"\nRegularization Settings:")
+    print(f"  - Block Dropout: {model.inception1.dropout.p}")
+    print(f"  - Final Dropout: {model.dropout.p}")
+    print(f"  - Stochastic Depth: 0.0 -> {model.inception9.drop_path.drop_prob:.3f}")
+    print(f"{'='*60}")
 
 
 if __name__ == "__main__":
     # Quick test
     model = SEResInception(num_classes=100)
     get_model_summary(model)
+    
+    # Test training vs eval mode behavior
+    print("\nTesting train/eval mode:")
+    model.train()
+    x = torch.randn(2, 3, 32, 32)
+    if torch.cuda.is_available():
+        model = model.cuda()
+        x = x.cuda()
+    out_train = model(x)
+    model.eval()
+    out_eval = model(x)
+    print(f"  Train mode output std: {out_train.std().item():.4f}")
+    print(f"  Eval mode output std:  {out_eval.std().item():.4f}")
