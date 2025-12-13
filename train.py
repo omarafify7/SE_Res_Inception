@@ -11,15 +11,18 @@ Features:
 - Cosine annealing learning rate schedule
 - Best model checkpointing based on validation accuracy
 - tqdm progress bars with live loss/accuracy metrics
+- **Mixup/CutMix data augmentation** with soft-target cross-entropy loss
 
 Hardware Target: NVIDIA RTX 5070 Ti (Blackwell, SM_120)
 """
 
 import os
 import time
+import random
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.amp import autocast, GradScaler
@@ -44,8 +47,14 @@ class Config:
     EPOCHS = 100
     BATCH_SIZE = 128  # RTX 5070 Ti has plenty of VRAM
     LEARNING_RATE = 1e-3
-    WEIGHT_DECAY = 1e-4
+    WEIGHT_DECAY = 5e-4  # Increased from 1e-4 to combat overfitting
     DROPOUT = 0.4
+    
+    # Mixup/CutMix Configuration
+    MIXUP_ALPHA = 1.0       # Beta distribution alpha for Mixup (1.0 is uniform)
+    CUTMIX_ALPHA = 1.0      # Beta distribution alpha for CutMix
+    MIXUP_CUTMIX_PROB = 0.5 # Probability of applying Mixup or CutMix (50%)
+    CUTMIX_PROB = 0.5       # When augmenting, probability of CutMix vs Mixup
     
     # Data Loading (optimized for RTX 5070 Ti)
     NUM_WORKERS = 4
@@ -136,6 +145,209 @@ def get_dataloaders(config: Config) -> tuple:
 
 
 # ============================================================================
+# MIXUP / CUTMIX AUGMENTATION
+# ============================================================================
+def mixup_data(x: torch.Tensor, y: torch.Tensor, alpha: float = 1.0) -> tuple:
+    """
+    Apply Mixup augmentation to a batch.
+    
+    Mixup creates virtual training examples by linearly interpolating
+    between pairs of images and their labels.
+    
+    Reference: Zhang et al., "mixup: Beyond Empirical Risk Minimization", ICLR 2018
+    
+    Args:
+        x: Input images [B, C, H, W]
+        y: Target labels [B]
+        alpha: Beta distribution parameter (1.0 = uniform distribution)
+    
+    Returns:
+        tuple: (mixed_x, y_a, y_b, lam)
+            - mixed_x: Linearly interpolated images
+            - y_a: Original labels
+            - y_b: Shuffled labels
+            - lam: Mixing coefficient
+    """
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1.0
+    
+    batch_size = x.size(0)
+    index = torch.randperm(batch_size, device=x.device)
+    
+    mixed_x = lam * x + (1 - lam) * x[index, :]
+    y_a, y_b = y, y[index]
+    
+    return mixed_x, y_a, y_b, lam
+
+
+def rand_bbox(size: tuple, lam: float) -> tuple:
+    """
+    Generate random bounding box coordinates for CutMix.
+    
+    The box size is determined by the mixing ratio lam,
+    targeting sqrt(1-lam) of the image area for the cut region.
+    
+    Args:
+        size: Image tensor size [B, C, H, W]
+        lam: Mixing coefficient (determines box area)
+    
+    Returns:
+        tuple: (bbx1, bby1, bbx2, bby2) box coordinates
+    """
+    W = size[2]
+    H = size[3]
+    
+    # Box size proportional to sqrt(1-lam)
+    cut_rat = np.sqrt(1.0 - lam)
+    cut_w = int(W * cut_rat)
+    cut_h = int(H * cut_rat)
+    
+    # Random center point
+    cx = np.random.randint(W)
+    cy = np.random.randint(H)
+    
+    # Clip to image bounds
+    bbx1 = np.clip(cx - cut_w // 2, 0, W)
+    bby1 = np.clip(cy - cut_h // 2, 0, H)
+    bbx2 = np.clip(cx + cut_w // 2, 0, W)
+    bby2 = np.clip(cy + cut_h // 2, 0, H)
+    
+    return bbx1, bby1, bbx2, bby2
+
+
+def cutmix_data(x: torch.Tensor, y: torch.Tensor, alpha: float = 1.0) -> tuple:
+    """
+    Apply CutMix augmentation to a batch.
+    
+    CutMix cuts a rectangular region from one image and pastes it onto
+    another, mixing labels proportional to the area of the patch.
+    
+    Reference: Yun et al., "CutMix: Regularization Strategy to Train 
+               Strong Classifiers with Localizable Features", ICCV 2019
+    
+    Args:
+        x: Input images [B, C, H, W]
+        y: Target labels [B]
+        alpha: Beta distribution parameter
+    
+    Returns:
+        tuple: (mixed_x, y_a, y_b, lam)
+            - mixed_x: CutMix-augmented images
+            - y_a: Original labels
+            - y_b: Shuffled labels  
+            - lam: Adjusted mixing coefficient based on actual cut area
+    """
+    if alpha > 0:
+        lam = np.random.beta(alpha, alpha)
+    else:
+        lam = 1.0
+    
+    batch_size = x.size(0)
+    index = torch.randperm(batch_size, device=x.device)
+    
+    y_a, y_b = y, y[index]
+    
+    # Generate random bounding box
+    bbx1, bby1, bbx2, bby2 = rand_bbox(x.size(), lam)
+    
+    # Apply CutMix - replace rectangular region
+    mixed_x = x.clone()
+    mixed_x[:, :, bbx1:bbx2, bby1:bby2] = x[index, :, bbx1:bbx2, bby1:bby2]
+    
+    # Adjust lambda based on actual area ratio (not the sampled lambda)
+    lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (x.size(-1) * x.size(-2)))
+    
+    return mixed_x, y_a, y_b, lam
+
+
+# ============================================================================
+# SOFT-TARGET CROSS ENTROPY LOSS
+# ============================================================================
+class SoftTargetCrossEntropy(nn.Module):
+    """
+    Cross-entropy loss for mixed (soft) targets from Mixup/CutMix.
+    
+    Standard CrossEntropyLoss expects hard labels (class indices), but
+    Mixup/CutMix produce soft targets (linear combinations of two classes).
+    
+    This loss computes: L = -lam * log(p[y_a]) - (1-lam) * log(p[y_b])
+    
+    Includes label smoothing support for additional regularization.
+    """
+    
+    def __init__(self, label_smoothing: float = 0.1):
+        super().__init__()
+        self.label_smoothing = label_smoothing
+    
+    def forward(
+        self, 
+        outputs: torch.Tensor, 
+        targets_a: torch.Tensor, 
+        targets_b: torch.Tensor, 
+        lam: float
+    ) -> torch.Tensor:
+        """
+        Compute soft-target cross entropy loss.
+        
+        Args:
+            outputs: Model predictions [B, num_classes]
+            targets_a: First target labels [B]
+            targets_b: Second target labels [B]
+            lam: Mixing coefficient
+        
+        Returns:
+            Scalar loss tensor
+        """
+        # Apply log_softmax for numerical stability
+        log_probs = F.log_softmax(outputs, dim=1)
+        
+        # Create one-hot encoded targets with label smoothing
+        num_classes = outputs.size(1)
+        
+        # Smooth targets: (1-smoothing)*one_hot + smoothing/num_classes
+        smooth_a = self._smooth_one_hot(targets_a, num_classes)
+        smooth_b = self._smooth_one_hot(targets_b, num_classes)
+        
+        # Mix the softened targets
+        soft_targets = lam * smooth_a + (1 - lam) * smooth_b
+        
+        # Compute cross-entropy: -sum(p * log(q))
+        loss = torch.sum(-soft_targets * log_probs, dim=1)
+        
+        return loss.mean()
+    
+    def _smooth_one_hot(
+        self, 
+        targets: torch.Tensor, 
+        num_classes: int
+    ) -> torch.Tensor:
+        """
+        Create label-smoothed one-hot vectors.
+        
+        Args:
+            targets: Class indices [B]
+            num_classes: Total number of classes
+        
+        Returns:
+            Smoothed one-hot vectors [B, num_classes]
+        """
+        off_value = self.label_smoothing / num_classes
+        on_value = 1.0 - self.label_smoothing + off_value
+        
+        one_hot = torch.full(
+            (targets.size(0), num_classes),
+            off_value,
+            device=targets.device,
+            dtype=torch.float32
+        )
+        one_hot.scatter_(1, targets.unsqueeze(1), on_value)
+        
+        return one_hot
+
+
+# ============================================================================
 # TRAINING UTILITIES
 # ============================================================================
 class AverageMeter:
@@ -163,6 +375,36 @@ def calculate_accuracy(output: torch.Tensor, target: torch.Tensor) -> float:
         pred = output.argmax(dim=1)
         correct = pred.eq(target).sum().item()
         return correct / target.size(0) * 100
+
+
+def calculate_mixed_accuracy(
+    output: torch.Tensor, 
+    targets_a: torch.Tensor, 
+    targets_b: torch.Tensor, 
+    lam: float
+) -> float:
+    """
+    Calculate accuracy for mixed samples.
+    
+    For Mixup/CutMix, we count a prediction as partially correct
+    based on whether it matches either of the mixed classes,
+    weighted by the mixing coefficient.
+    
+    Args:
+        output: Model predictions [B, num_classes]
+        targets_a: First target labels [B]
+        targets_b: Second target labels [B]
+        lam: Mixing coefficient
+    
+    Returns:
+        Weighted accuracy percentage
+    """
+    with torch.no_grad():
+        pred = output.argmax(dim=1)
+        correct_a = pred.eq(targets_a).float()
+        correct_b = pred.eq(targets_b).float()
+        accuracy = lam * correct_a + (1 - lam) * correct_b
+        return accuracy.mean().item() * 100
 
 
 class MetricsTracker:
@@ -250,7 +492,8 @@ class MetricsTracker:
 def train_one_epoch(
     model: nn.Module,
     train_loader: DataLoader,
-    criterion: nn.Module,
+    criterion_standard: nn.Module,
+    criterion_mixup: SoftTargetCrossEntropy,
     optimizer: optim.Optimizer,
     scaler: GradScaler,
     device: torch.device,
@@ -258,7 +501,11 @@ def train_one_epoch(
     config: Config
 ) -> tuple:
     """
-    Train for one epoch with Mixed Precision (AMP).
+    Train for one epoch with Mixed Precision (AMP) and Mixup/CutMix.
+    
+    Augmentation Strategy:
+    - 50% of batches: Apply Mixup or CutMix (50/50 split between them)
+    - 50% of batches: Standard training with basic augmentations
     
     Returns:
         tuple: (average_loss, average_accuracy)
@@ -276,10 +523,37 @@ def train_one_epoch(
         
         optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
         
-        # Mixed Precision forward pass
-        with autocast(device_type='cuda', enabled=config.USE_AMP):
-            outputs = model(images)
-            loss = criterion(outputs, targets)
+        # Probability switch: Apply Mixup/CutMix or standard augmentation
+        use_mixup_cutmix = random.random() < config.MIXUP_CUTMIX_PROB
+        
+        if use_mixup_cutmix:
+            # Choose between Mixup and CutMix
+            if random.random() < config.CUTMIX_PROB:
+                # Apply CutMix
+                mixed_images, targets_a, targets_b, lam = cutmix_data(
+                    images, targets, config.CUTMIX_ALPHA
+                )
+            else:
+                # Apply Mixup
+                mixed_images, targets_a, targets_b, lam = mixup_data(
+                    images, targets, config.MIXUP_ALPHA
+                )
+            
+            # Mixed Precision forward pass with mixed images
+            with autocast(device_type='cuda', enabled=config.USE_AMP):
+                outputs = model(mixed_images)
+                loss = criterion_mixup(outputs, targets_a, targets_b, lam)
+            
+            # Calculate mixed accuracy
+            acc = calculate_mixed_accuracy(outputs, targets_a, targets_b, lam)
+        else:
+            # Standard training (no Mixup/CutMix)
+            with autocast(device_type='cuda', enabled=config.USE_AMP):
+                outputs = model(images)
+                loss = criterion_standard(outputs, targets)
+            
+            # Standard accuracy
+            acc = calculate_accuracy(outputs, targets)
         
         # Mixed Precision backward pass
         scaler.scale(loss).backward()
@@ -287,7 +561,6 @@ def train_one_epoch(
         scaler.update()
         
         # Metrics
-        acc = calculate_accuracy(outputs, targets)
         loss_meter.update(loss.item(), images.size(0))
         acc_meter.update(acc, images.size(0))
         
@@ -308,7 +581,7 @@ def validate(
     config: Config
 ) -> tuple:
     """
-    Validate the model.
+    Validate the model (no Mixup/CutMix during validation).
     
     Returns:
         tuple: (average_loss, average_accuracy)
@@ -427,6 +700,8 @@ def main():
     print(f"Mixed Precision (AMP): {'Enabled' if config.USE_AMP else 'Disabled'}")
     print(f"Batch Size: {config.BATCH_SIZE}")
     print(f"Learning Rate: {config.LEARNING_RATE}")
+    print(f"Weight Decay: {config.WEIGHT_DECAY}")
+    print(f"Mixup/CutMix Probability: {config.MIXUP_CUTMIX_PROB:.0%}")
     print(f"Epochs: {config.EPOCHS}")
     print("=" * 60)
     
@@ -442,12 +717,17 @@ def main():
     print(f"Model Parameters: {total_params:,}")
     print("=" * 60)
     
-    # Loss, Optimizer, Scheduler
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)  # Label smoothing for regularization
+    # Loss Functions
+    # Standard cross-entropy for non-augmented batches and validation
+    criterion_standard = nn.CrossEntropyLoss(label_smoothing=0.1)
+    # Soft-target cross-entropy for Mixup/CutMix batches
+    criterion_mixup = SoftTargetCrossEntropy(label_smoothing=0.1)
+    
+    # Optimizer with increased weight decay
     optimizer = optim.AdamW(
         model.parameters(),
         lr=config.LEARNING_RATE,
-        weight_decay=config.WEIGHT_DECAY
+        weight_decay=config.WEIGHT_DECAY  # Now 5e-4
     )
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=config.EPOCHS)
     
@@ -469,13 +749,14 @@ def main():
     for epoch in range(start_epoch + 1, config.EPOCHS + 1):
         epoch_start = time.time()
         
-        # Train
+        # Train with Mixup/CutMix
         train_loss, train_acc = train_one_epoch(
-            model, train_loader, criterion, optimizer, scaler, device, epoch, config
+            model, train_loader, criterion_standard, criterion_mixup,
+            optimizer, scaler, device, epoch, config
         )
         
-        # Validate
-        val_loss, val_acc = validate(model, val_loader, criterion, device, config)
+        # Validate (no Mixup/CutMix)
+        val_loss, val_acc = validate(model, val_loader, criterion_standard, device, config)
         
         # Update learning rate
         scheduler.step()
@@ -487,12 +768,15 @@ def main():
         # Save metrics (persisted as numpy arrays for plotting)
         metrics.update(epoch, train_loss, train_acc, val_loss, val_acc)
         
+        # Calculate generalization gap
+        gen_gap = train_acc - val_acc
+        
         # Print epoch summary
         print(
             f"Epoch {epoch:3d}/{config.EPOCHS} | "
             f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.2f}% | "
             f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.2f}% | "
-            f"LR: {current_lr:.6f} | Time: {epoch_time:.1f}s"
+            f"Gap: {gen_gap:.1f}% | LR: {current_lr:.6f} | Time: {epoch_time:.1f}s"
         )
         
         # Save best model
