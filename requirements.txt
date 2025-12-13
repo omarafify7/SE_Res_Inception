@@ -1,0 +1,15 @@
+# SE-Res-Inception Requirements
+# ==============================
+# Note: PyTorch must be installed separately with CUDA 12.8 support
+# for RTX 5070 Ti (Blackwell SM_120):
+#
+#   pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+#
+
+# Core dependencies (versions compatible with PyTorch 2.0+)
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# Progress bar
+tqdm>=4.65.0
