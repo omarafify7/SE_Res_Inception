@@ -115,13 +115,14 @@ def load_model() -> None:
     print(f"[INFO] Model loaded successfully with {sum(p.numel() for p in model.parameters()):,} parameters")
     
     # Define preprocessing pipeline
-    # Using ImageNet normalization as specified, resize to 224x224
+    # Model trained on CIFAR-100 (32x32), using CIFAR-100 normalization
+    # Note: For best results, images should be similar to CIFAR-100 content
     preprocess = transforms.Compose([
-        transforms.Resize((224, 224)),
+        transforms.Resize((32, 32)),  # CIFAR-100 native resolution
         transforms.ToTensor(),
         transforms.Normalize(
-            mean=[0.485, 0.456, 0.406],
-            std=[0.229, 0.224, 0.225]
+            mean=[0.5071, 0.4867, 0.4408],  # CIFAR-100 training mean
+            std=[0.2675, 0.2565, 0.2761]    # CIFAR-100 training std
         )
     ])
     print("[INFO] Preprocessing pipeline initialized")
@@ -168,7 +169,7 @@ def preprocess_image(image_data: bytes) -> torch.Tensor:
         image_data: Raw bytes of the uploaded image
         
     Returns:
-        Preprocessed tensor ready for model inference (1, 3, 224, 224)
+        Preprocessed tensor ready for model inference (1, 3, 32, 32)
         
     Raises:
         HTTPException: If image cannot be processed
