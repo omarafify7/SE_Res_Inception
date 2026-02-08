@@ -155,8 +155,8 @@ def create_grad_cam_gallery(model, val_set, raw_set, device, output_path: str,
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
     # Get the last convolutional layer (before global average pooling)
-    # In SE-Res-Inception, this is the final inception block's output
-    target_layer = model.inception_c  # Adjust based on model architecture
+    # In SEResInception, this is inception9 (the final inception block)
+    target_layer = model.inception9
     grad_cam = GradCAM(model, target_layer)
     
     # Get class names

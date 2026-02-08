@@ -182,7 +182,7 @@ def create_error_gallery(errors: list, val_set, raw_set, class_names: list,
     
     # Also create a text report
     report_path = output_path.replace('.png', '_report.txt')
-    with open(report_path, 'w') as f:
+    with open(report_path, 'w', encoding='utf-8') as f:
         f.write("TOP ERRORS REPORT\n")
         f.write("=" * 60 + "\n\n")
         
@@ -200,7 +200,7 @@ def create_error_gallery(errors: list, val_set, raw_set, class_names: list,
             pred_counts[pred_name] = pred_counts.get(pred_name, 0) + 1
             true_counts[true_name] = true_counts.get(true_name, 0) + 1
             
-            pair = f"{true_name} → {pred_name}"
+            pair = f"{true_name} -> {pred_name}"
             confusion_pairs[pair] = confusion_pairs.get(pair, 0) + 1
         
         f.write("MOST FREQUENTLY PREDICTED (incorrectly):\n")

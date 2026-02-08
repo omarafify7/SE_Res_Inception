@@ -101,17 +101,27 @@ class FeatureExtractor:
         
         def hooked_forward(x):
             # Run through the model but capture pre-FC features
+            # Stage 1
             x = self.model.stem(x)
+            x = self.model.inception1(x)
+            x = self.model.inception2(x)
             x = self.model.pool1(x)
-            x = self.model.inception_a(x)
+            # Stage 2
+            x = self.model.inception3(x)
+            x = self.model.inception4(x)
+            # Stage 3
+            x = self.model.inception5(x)
+            x = self.model.inception6(x)
+            x = self.model.inception7(x)
             x = self.model.pool2(x)
-            x = self.model.inception_b(x)
-            x = self.model.pool3(x)
-            x = self.model.inception_c(x)
-            x = self.model.gap(x)
+            # Stage 4
+            x = self.model.inception8(x)
+            x = self.model.inception9(x)
+            # Classifier head
+            x = self.model.global_pool(x)
             x = x.view(x.size(0), -1)
             self.features = x.detach()
-            x = self.model.drop(x)
+            x = self.model.dropout(x)
             x = self.model.fc(x)
             return x
         
@@ -215,7 +225,7 @@ def main():
     
     # t-SNE
     print("\nComputing t-SNE (this may take a few minutes)...")
-    tsne = TSNE(n_components=2, random_state=42, perplexity=30, n_iter=1000)
+    tsne = TSNE(n_components=2, random_state=42, perplexity=30, max_iter=1000)
     embedding_tsne = tsne.fit_transform(features)
     plot_embedding(embedding_tsne, labels, predictions, class_names,
                   "./outputs/embedding_tsne.png", "t-SNE")

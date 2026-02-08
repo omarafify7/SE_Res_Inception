@@ -1,0 +1,38 @@
+TOP ERRORS REPORT
+============================================================
+
+MOST FREQUENTLY PREDICTED (incorrectly):
+  lampshade: 2 times
+  lemon: 2 times
+  suspension bridge: 1 times
+  sunglasses: 1 times
+  snail: 1 times
+  wok: 1 times
+  iPod: 1 times
+  guacamole: 1 times
+  American alligator: 1 times
+  basketball: 1 times
+
+MOST FREQUENTLY WRONG ABOUT:
+  orange: 3 times
+  bannister: 1 times
+  ice lolly: 1 times
+  acorn: 1 times
+  frying pan: 1 times
+  stopwatch: 1 times
+  wok: 1 times
+  boa constrictor: 1 times
+  pole: 1 times
+  nail: 1 times
+
+MOST COMMON CONFUSION PAIRS:
+  orange -> lemon: 2 times
+  bannister -> suspension bridge: 1 times
+  ice lolly -> sunglasses: 1 times
+  acorn -> snail: 1 times
+  frying pan -> wok: 1 times
+  stopwatch -> iPod: 1 times
+  wok -> guacamole: 1 times
+  boa constrictor -> American alligator: 1 times
+  pole -> basketball: 1 times
+  nail -> trilobite: 1 times
