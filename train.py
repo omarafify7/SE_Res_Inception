@@ -62,7 +62,7 @@ class Config:
     LATEST_CHECKPOINT_PATH = f"{CHECKPOINT_DIR}/latest_checkpoint.pth"
 
     # Hyperparameters
-    BATCH_SIZE = 128
+    BATCH_SIZE = 80
     LEARNING_RATE = 1e-3
     WEIGHT_DECAY = 5e-4
     DROPOUT = 0.4

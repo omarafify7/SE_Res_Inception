@@ -14,7 +14,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
-def plot_training_curves(metrics_path: str = "./checkpoints/metrics.npz"):
+def plot_training_curves(metrics_path: str = "./checkpoints/tiny_imagenet/metrics.npz"):
     """
     Load and plot training curves from saved metrics.
     
