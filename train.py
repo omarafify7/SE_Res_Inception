@@ -39,109 +39,109 @@ from model import SEResInception
 class Config:
     """Training configuration - all hyperparameters in one place"""
     
-    # Dataset
+    # Dataset Config
+    DATASET = 'tiny_imagenet'  # 'cifar100' or 'tiny_imagenet'
+    
+    # Tiny ImageNet Mean/Std (approximated) vs CIFAR-100
+    if DATASET == 'cifar100':
+        MEAN = (0.5071, 0.4867, 0.4408)
+        STD = (0.2675, 0.2565, 0.2761)
+        IMG_SIZE = 32
+        NUM_CLASSES = 100
+    else: # Tiny ImageNet
+        MEAN = (0.4802, 0.4481, 0.3975)
+        STD = (0.2302, 0.2265, 0.2262)
+        IMG_SIZE = 64
+        NUM_CLASSES = 200
+
+    # Paths (Dynamic based on dataset)
     DATA_DIR = "./data"
-    NUM_CLASSES = 100
-    
-    # Training
-    EPOCHS = 100
-    BATCH_SIZE = 128  # RTX 5070 Ti has plenty of VRAM
+    CHECKPOINT_DIR = f"./checkpoints/{DATASET}"
+    BEST_MODEL_PATH = f"{CHECKPOINT_DIR}/best_model.pth"
+    METRICS_PATH = f"{CHECKPOINT_DIR}/metrics.npz"
+    LATEST_CHECKPOINT_PATH = f"{CHECKPOINT_DIR}/latest_checkpoint.pth"
+
+    # Hyperparameters
+    BATCH_SIZE = 128
     LEARNING_RATE = 1e-3
-    WEIGHT_DECAY = 5e-4  # Increased from 1e-4 to combat overfitting
+    WEIGHT_DECAY = 5e-4
     DROPOUT = 0.4
+    EPOCHS = 100
     
-    # Mixup/CutMix Configuration
-    MIXUP_ALPHA = 1.0       # Beta distribution alpha for Mixup (1.0 is uniform)
-    CUTMIX_ALPHA = 1.0      # Beta distribution alpha for CutMix
-    MIXUP_CUTMIX_PROB = 0.5 # Probability of applying Mixup or CutMix (50%)
-    CUTMIX_PROB = 0.5       # When augmenting, probability of CutMix vs Mixup
+    # Augmentation
+    MIXUP_CUTMIX_PROB = 0.5    # Probability to apply either Mixup or CutMix
+    CUTMIX_PROB = 0.5          # Probability of CutMix (vs Mixup)
+    MIXUP_ALPHA = 1.0
+    CUTMIX_ALPHA = 1.0
     
-    # Data Loading (optimized for RTX 5070 Ti)
+    # Hardware
     NUM_WORKERS = 4
     PIN_MEMORY = True
-    
-    # Checkpointing
-    CHECKPOINT_DIR = "./checkpoints"
-    BEST_MODEL_PATH = "./checkpoints/best_model.pth"
-    METRICS_PATH = "./checkpoints/metrics.npz"  # Numpy arrays for plotting
-    LATEST_CHECKPOINT_PATH = "./checkpoints/latest_checkpoint.pth"  # For resume
-    
-    # Mixed Precision
-    USE_AMP = True  # Enable for tensor core utilization
+    USE_AMP = True             # Mixed Precision Training
 
 
 # ============================================================================
 # DATA LOADING
 # ============================================================================
 def get_dataloaders(config: Config) -> tuple:
-    """
-    Create train and validation dataloaders for CIFAR-100.
+    """Prepare DataLoaders with augmentation"""
+    print(f"Preparing DataLoaders for {config.DATASET}...")
     
-    Data augmentation:
-    - Train: RandomCrop with padding, RandomHorizontalFlip, Normalize
-    - Val: Just Normalize
-    
-    Returns:
-        tuple: (train_loader, val_loader, class_names)
-    """
-    
-    # CIFAR-100 normalization statistics
-    mean = (0.5071, 0.4867, 0.4408)
-    std = (0.2675, 0.2565, 0.2761)
-    
-    # Training transforms with augmentation
-    train_transform = transforms.Compose([
-        transforms.RandomCrop(32, padding=4),
+    transform_train = transforms.Compose([
+        transforms.RandomCrop(config.IMG_SIZE, padding=4 if config.IMG_SIZE == 32 else 8),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize(mean, std)
+        transforms.Normalize(config.MEAN, config.STD),
     ])
     
-    # Validation transforms (no augmentation)
-    val_transform = transforms.Compose([
+    transform_test = transforms.Compose([
         transforms.ToTensor(),
-        transforms.Normalize(mean, std)
+        transforms.Normalize(config.MEAN, config.STD),
     ])
     
-    # Download and load CIFAR-100
-    print("Loading CIFAR-100 dataset...")
-    train_dataset = torchvision.datasets.CIFAR100(
-        root=config.DATA_DIR,
-        train=True,
-        download=True,
-        transform=train_transform
-    )
-    
-    val_dataset = torchvision.datasets.CIFAR100(
-        root=config.DATA_DIR,
-        train=False,
-        download=True,
-        transform=val_transform
-    )
-    
-    # Create dataloaders with optimized settings
+    if config.DATASET == 'cifar100':
+        train_set = torchvision.datasets.CIFAR100(
+            root=config.DATA_DIR, train=True, download=True, transform=transform_train
+        )
+        test_set = torchvision.datasets.CIFAR100(
+            root=config.DATA_DIR, train=False, download=True, transform=transform_test
+        )
+    else: # Tiny ImageNet
+        train_dir = os.path.join(config.DATA_DIR, 'tiny-imagenet-200', 'train')
+        val_dir = os.path.join(config.DATA_DIR, 'tiny-imagenet-200', 'val')
+        
+        if not os.path.exists(train_dir):
+            raise FileNotFoundError(f"Training data not found at {train_dir}. Run scripts/prepare_tiny_imagenet.py first.")
+            
+        train_set = torchvision.datasets.ImageFolder(root=train_dir, transform=transform_train)
+        test_set = torchvision.datasets.ImageFolder(root=val_dir, transform=transform_test)
+        
     train_loader = DataLoader(
-        train_dataset,
-        batch_size=config.BATCH_SIZE,
-        shuffle=True,
+        train_set, 
+        batch_size=config.BATCH_SIZE, 
+        shuffle=True, 
+        num_workers=config.NUM_WORKERS,
+        pin_memory=config.PIN_MEMORY,
+        persistent_workers=True if config.NUM_WORKERS > 0 else False,
+        drop_last=True
+    )
+    
+    test_loader = DataLoader(
+        test_set, 
+        batch_size=config.BATCH_SIZE, 
+        shuffle=False, 
         num_workers=config.NUM_WORKERS,
         pin_memory=config.PIN_MEMORY,
         persistent_workers=True if config.NUM_WORKERS > 0 else False
     )
     
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config.BATCH_SIZE,
-        shuffle=False,
-        num_workers=config.NUM_WORKERS,
-        pin_memory=config.PIN_MEMORY,
-        persistent_workers=True if config.NUM_WORKERS > 0 else False
-    )
+    print(f"Train samples: {len(train_set):,}")
+    print(f"Val samples:   {len(test_set):,}")
     
-    print(f"Train samples: {len(train_dataset):,}")
-    print(f"Val samples:   {len(val_dataset):,}")
-    
-    return train_loader, val_loader, train_dataset.classes
+    # Handle classes attribute which might vary between dataset types
+    classes = train_set.classes if hasattr(train_set, 'classes') else list(range(config.NUM_CLASSES))
+
+    return train_loader, test_loader, classes
 
 
 # ============================================================================
@@ -681,7 +681,27 @@ def load_checkpoint(
 def main():
     """Main training entry point"""
     
+    import argparse
+    parser = argparse.ArgumentParser(description='SE-Res-Inception Training')
+    parser.add_argument('--epochs', type=int, help='Number of epochs to train')
+    parser.add_argument('--batch-size', type=int, help='Batch size')
+    parser.add_argument('--lr', type=float, help='Learning rate')
+    parser.add_argument('--dry-run', action='store_true', help='Run a single epoch for testing')
+    args = parser.parse_args()
+    
     config = Config()
+    
+    # Override config with args
+    if args.epochs:
+        config.EPOCHS = args.epochs
+    if args.batch_size:
+        config.BATCH_SIZE = args.batch_size
+    if args.lr:
+        config.LEARNING_RATE = args.lr
+    if args.dry_run:
+        config.EPOCHS = 1
+        config.BATCH_SIZE = 32  # Smaller batch for quick test
+        print("DRY RUN MODE ENABLED: 1 Epoch, Batch Size 32")
     
     # Print training configuration
     print("=" * 60)
