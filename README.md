@@ -48,21 +48,36 @@ flowchart LR
 
 ## Results
 
-Fair comparison on CIFAR-100, same training recipe (epochs, optimizer, augmentations) across all three models. Latency is measured as single-image forward pass on a CPU for the gateway-path worst case.
+### Fair baseline comparison on CIFAR-100
 
-| Model                     | Top-1 Acc | Top-5 Acc | Params | FLOPs (M) | CPU Latency (ms) |
-|---------------------------|:---------:|:---------:|:------:|:---------:|:----------------:|
-| ResNet18 (baseline)       |   72.1%   |   91.5%   | 11.2 M |    556    |       18.4       |
-| GoogLeNet (baseline)      |   70.8%   |   90.9%   |  6.2 M |    1500   |       24.1       |
-| **SE-Res-Inception V2**   | **73.4%** | **92.3%** | **4.8 M** |  **612** |     **16.9**     |
+All three models trained **from scratch** with identical hyperparameters (AdamW lr=1e-3 wd=5e-4, cosine anneal, Mixup α=1.0 + CutMix α=1.0 at 50% probability, label smoothing 0.1, AMP, 100 epochs, batch 80). The only variable is the architecture.
+
+| Model                     | Top-1 Acc | Top-5 Acc |  Params | GPU Latency (ms) | CPU Latency (ms) |
+|---------------------------|:---------:|:---------:|:-------:|:----------------:|:----------------:|
+| ResNet-18                 |   60.25%  |   83.32%  | 11.23 M |       2.05       |       4.17       |
+| GoogLeNet                 |   58.17%  |   83.14%  |  5.70 M |       5.81       |       4.94       |
+| **SE-Res-Inception V2**   | **78.85%**| **95.15%**| **8.86 M** |    **7.92**      |       76.42      |
 
 ![Baseline comparison](outputs/baseline_comparison.png)
 
 Key takeaways:
 
-- **Higher accuracy with ~43% of ResNet18's parameters** — the SE block's channel recalibration recovers more than it costs.
-- **Competitive CPU latency** even without hardware acceleration, making the CPU-bound gateway path viable for non-GPU hosts.
-- **Validated scaling**: the same architecture trains cleanly on Tiny ImageNet (64×64, 200 classes) and COCO crops (128×128) — see [`datasets/coco_crops.py`](datasets/coco_crops.py).
+- **+18.6 pp top-1 vs ResNet-18** with 21% fewer parameters. The SE block's channel recalibration recovers more than it costs.
+- **+20.7 pp top-1 vs GoogLeNet** despite using roughly comparable parameter counts — the SE attention and residual stack deliver clear architectural gains.
+- Latency trade-off: ResNet-18 remains faster (simpler sequential convolutions vectorize better than Inception's parallel branches). For accuracy-critical inference, SE-Res-Inception wins; for latency-critical, ResNet-18 does.
+
+### Scaling to larger inputs: COCO-Crops (128×128, 80 classes)
+
+Using the same architecture (with an adaptive ImageNet-style stem for input ≥128px), trained from scratch on **347,133 bounding-box crops** across the 80 COCO categories:
+
+| Dataset       | Input   | Classes | Top-1 Acc | Top-5 Acc |  Params | GPU Latency (ms) |
+|---------------|:-------:|:-------:|:---------:|:---------:|:-------:|:----------------:|
+| CIFAR-100     | 32×32   |   100   |   78.85%  |   95.15%  |  8.86 M |        7.92      |
+| **COCO-Crops**| **128×128**| **80** | **84.23%** | **96.97%** | **8.85 M** |  **14.02**  |
+
+The same 8.86M-parameter network scales cleanly from CIFAR-100 to COCO-Crops. Val accuracy climbed monotonically from **72.60% (epoch 5) → 84.23% (epoch 50)** with no collapse and a consistently negative generalization gap (val > train, thanks to Mixup/CutMix soft targets). Training took 4h 5min on a single RTX 5070 Ti.
+
+See [`docs/PORTFOLIO_BUILD.md`](docs/PORTFOLIO_BUILD.md) for the full scaling discussion, including the stem-downsampling fix that made 128×128 training tractable.
 
 ---
 

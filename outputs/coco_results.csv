@@ -1,0 +1,2 @@
+model,dataset,input_size,num_classes,params_M,top1_acc,top5_acc,inference_ms_cpu,inference_ms_gpu,epochs
+SE-Res-Inception,coco_crops,128,80,8.85,84.23,96.97,69.28,14.02,48
