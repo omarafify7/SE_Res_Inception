@@ -1,0 +1,4 @@
+model,params_M,top1_acc,top5_acc,inference_ms_cpu,inference_ms_gpu
+SE-Res-Inception,8.86,78.85,95.15,76.42,7.92
+ResNet-18,11.23,60.25,83.32,4.17,2.05
+GoogLeNet,5.7,58.17,83.14,4.94,5.81
