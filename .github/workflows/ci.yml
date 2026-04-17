@@ -1,0 +1,171 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Python: lint, syntax check, and unit tests
+  # ---------------------------------------------------------------------------
+  python:
+    name: Python Lint & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # CPU-only PyTorch is sufficient for linting, syntax, and unit tests.
+          pip install --index-url https://download.pytorch.org/whl/cpu \
+            torch torchvision torchaudio
+          pip install -r requirements.txt
+          pip install ruff pytest pillow numpy
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Syntax check (py_compile)
+        run: |
+          python -m py_compile \
+            model.py \
+            train.py \
+            inference/main.py \
+            baselines/train_baseline.py \
+            datasets/coco_crops.py
+
+      - name: Pytest (unit tests)
+        run: pytest -q
+
+  # ---------------------------------------------------------------------------
+  # Go: format, vet, race-enabled tests for the API gateway
+  # ---------------------------------------------------------------------------
+  go:
+    name: Go Format, Vet & Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gateway
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: gateway/go.sum
+
+      - name: Download modules
+        run: go mod download
+
+      - name: go fmt (check)
+        run: |
+          fmt_out=$(gofmt -l .)
+          if [ -n "$fmt_out" ]; then
+            echo "The following files are not gofmt-clean:" >&2
+            echo "$fmt_out" >&2
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test -race
+        run: go test -race -v ./...
+
+  # ---------------------------------------------------------------------------
+  # Docker: build inference and gateway images (no push)
+  # ---------------------------------------------------------------------------
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build inference image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: inference/Dockerfile
+          tags: ml-inference:ci
+          push: false
+          load: true
+          cache-from: type=gha,scope=inference
+          cache-to: type=gha,scope=inference,mode=max
+
+      - name: Build gateway image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: gateway/Dockerfile
+          tags: ml-gateway:ci
+          push: false
+          load: true
+          cache-from: type=gha,scope=gateway
+          cache-to: type=gha,scope=gateway,mode=max
+
+  # ---------------------------------------------------------------------------
+  # Terraform: check formatting and validate AWS deployment module
+  # ---------------------------------------------------------------------------
+  terraform:
+    name: Terraform Validate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: deploy/aws
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Terraform fmt (check)
+        run: terraform fmt -check .
+
+      - name: Terraform init (backend-less)
+        run: terraform init -backend=false
+
+      - name: Terraform validate
+        run: terraform validate
+
+  # ---------------------------------------------------------------------------
+  # Aggregate gate: required status check for branch protection
+  # ---------------------------------------------------------------------------
+  ci-success:
+    name: CI Success
+    runs-on: ubuntu-latest
+    needs: [python, go, docker, terraform]
+    if: always()
+    steps:
+      - name: Verify all jobs succeeded
+        run: |
+          if [ "${{ needs.python.result }}" != "success" ] || \
+             [ "${{ needs.go.result }}" != "success" ] || \
+             [ "${{ needs.docker.result }}" != "success" ] || \
+             [ "${{ needs.terraform.result }}" != "success" ]; then
+            echo "One or more CI jobs failed."
+            exit 1
+          fi
+          echo "All CI jobs passed."
