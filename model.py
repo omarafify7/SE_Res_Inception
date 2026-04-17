@@ -310,23 +310,41 @@ class SEResInception(nn.Module):
     """
     
     def __init__(
-        self, 
-        num_classes: int = 100, 
+        self,
+        num_classes: int = 100,
         dropout: float = 0.5,
         block_dropout: float = 0.2,
-        drop_path_rate: float = 0.2
+        drop_path_rate: float = 0.2,
+        input_size: int = 32
     ) -> None:
         super().__init__()
-        
+
         self.num_blocks = 9  # Total inception blocks
-        
+        self.input_size = input_size
+
         # === STEM LAYER ===
-        # Adapted for CIFAR-100 32x32 input (no aggressive downsampling)
-        self.stem = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(64),
-            nn.ReLU(inplace=True)
-        )
+        # Spatial downsampling in stem is scaled to bring the feature map to
+        # ~32x32 before the Inception blocks. The body was designed for
+        # 32x32 CIFAR; at larger input sizes, Inception activations otherwise
+        # explode in VRAM (e.g. 128x128 input -> 33 GB peak memory).
+        #
+        #   input_size <= 64 (CIFAR / Tiny ImageNet): no downsampling in stem
+        #                                              (preserves legacy checkpoints)
+        #   input_size >= 65 (COCO 128, ImageNet 224): ImageNet-style stem
+        #                                              (7x7 stride=2 + MaxPool) -> /4
+        if input_size <= 64:
+            self.stem = nn.Sequential(
+                nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False),
+                nn.BatchNorm2d(64),
+                nn.ReLU(inplace=True),
+            )
+        else:  # input_size >= 128 (ImageNet-style stem)
+            self.stem = nn.Sequential(
+                nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False),
+                nn.BatchNorm2d(64),
+                nn.ReLU(inplace=True),
+                nn.MaxPool2d(kernel_size=3, stride=2, padding=1),
+            )
         
         # === STOCHASTIC DEPTH SCHEDULE ===
         # Linear increase from 0 to drop_path_rate across blocks

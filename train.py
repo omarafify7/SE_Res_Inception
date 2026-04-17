@@ -40,15 +40,20 @@ class Config:
     """Training configuration - all hyperparameters in one place"""
     
     # Dataset Config
-    DATASET = 'tiny_imagenet'  # 'cifar100' or 'tiny_imagenet'
-    
-    # Tiny ImageNet Mean/Std (approximated) vs CIFAR-100
+    DATASET = 'tiny_imagenet'  # 'cifar100', 'tiny_imagenet', or 'coco_crops'
+
+    # Dataset-specific defaults
     if DATASET == 'cifar100':
         MEAN = (0.5071, 0.4867, 0.4408)
         STD = (0.2675, 0.2565, 0.2761)
         IMG_SIZE = 32
         NUM_CLASSES = 100
-    else: # Tiny ImageNet
+    elif DATASET == 'coco_crops':
+        MEAN = (0.485, 0.456, 0.406)
+        STD = (0.229, 0.224, 0.225)
+        IMG_SIZE = 128
+        NUM_CLASSES = 80
+    else:  # Tiny ImageNet
         MEAN = (0.4802, 0.4481, 0.3975)
         STD = (0.2302, 0.2265, 0.2262)
         IMG_SIZE = 64
@@ -56,6 +61,7 @@ class Config:
 
     # Paths (Dynamic based on dataset)
     DATA_DIR = "./data"
+    DATA_ROOT = r"C:\Users\Omar\Documents\datasets\coco2014"  # Used by coco_crops
     CHECKPOINT_DIR = f"./checkpoints/{DATASET}"
     BEST_MODEL_PATH = f"{CHECKPOINT_DIR}/best_model.pth"
     METRICS_PATH = f"{CHECKPOINT_DIR}/metrics.npz"
@@ -99,6 +105,16 @@ def get_dataloaders(config: Config) -> tuple:
         transforms.Normalize(config.MEAN, config.STD),
     ])
     
+    if config.DATASET == 'coco_crops':
+        from datasets.coco_crops import get_coco_dataloaders  # ty: ignore[unresolved-import]
+        train_loader, val_loader, num_classes, class_names = get_coco_dataloaders(
+            root=config.DATA_ROOT,
+            image_size=config.IMG_SIZE,
+            batch_size=config.BATCH_SIZE,
+            num_workers=config.NUM_WORKERS
+        )
+        return train_loader, val_loader, class_names
+
     if config.DATASET == 'cifar100':
         train_set = torchvision.datasets.CIFAR100(
             root=config.DATA_DIR, train=True, download=True, transform=transform_train
@@ -106,38 +122,38 @@ def get_dataloaders(config: Config) -> tuple:
         test_set = torchvision.datasets.CIFAR100(
             root=config.DATA_DIR, train=False, download=True, transform=transform_test
         )
-    else: # Tiny ImageNet
+    else:  # Tiny ImageNet
         train_dir = os.path.join(config.DATA_DIR, 'tiny-imagenet-200', 'train')
         val_dir = os.path.join(config.DATA_DIR, 'tiny-imagenet-200', 'val')
-        
+
         if not os.path.exists(train_dir):
             raise FileNotFoundError(f"Training data not found at {train_dir}. Run scripts/prepare_tiny_imagenet.py first.")
-            
+
         train_set = torchvision.datasets.ImageFolder(root=train_dir, transform=transform_train)
         test_set = torchvision.datasets.ImageFolder(root=val_dir, transform=transform_test)
-        
+
     train_loader = DataLoader(
-        train_set, 
-        batch_size=config.BATCH_SIZE, 
-        shuffle=True, 
+        train_set,
+        batch_size=config.BATCH_SIZE,
+        shuffle=True,
         num_workers=config.NUM_WORKERS,
         pin_memory=config.PIN_MEMORY,
         persistent_workers=True if config.NUM_WORKERS > 0 else False,
         drop_last=True
     )
-    
+
     test_loader = DataLoader(
-        test_set, 
-        batch_size=config.BATCH_SIZE, 
-        shuffle=False, 
+        test_set,
+        batch_size=config.BATCH_SIZE,
+        shuffle=False,
         num_workers=config.NUM_WORKERS,
         pin_memory=config.PIN_MEMORY,
         persistent_workers=True if config.NUM_WORKERS > 0 else False
     )
-    
+
     print(f"Train samples: {len(train_set):,}")
     print(f"Val samples:   {len(test_set):,}")
-    
+
     # Handle classes attribute which might vary between dataset types
     classes = train_set.classes if hasattr(train_set, 'classes') else list(range(config.NUM_CLASSES))
 
@@ -683,15 +699,82 @@ def main():
     
     import argparse
     parser = argparse.ArgumentParser(description='SE-Res-Inception Training')
+    parser.add_argument('--dataset', type=str,
+                        choices=['cifar100', 'tiny_imagenet', 'coco_crops'],
+                        help='Dataset to train on (default: Config.DATASET)')
+    parser.add_argument('--config', type=str, default=None,
+                        help='Path to a YAML config file that overrides defaults')
     parser.add_argument('--epochs', type=int, help='Number of epochs to train')
     parser.add_argument('--batch-size', type=int, help='Batch size')
     parser.add_argument('--lr', type=float, help='Learning rate')
     parser.add_argument('--dry-run', action='store_true', help='Run a single epoch for testing')
     args = parser.parse_args()
-    
+
     config = Config()
-    
-    # Override config with args
+
+    # Override dataset first (before YAML, so YAML can further override)
+    if args.dataset:
+        config.DATASET = args.dataset
+
+    # Load YAML config file if provided
+    if args.config:
+        import yaml  # ty: ignore[unresolved-import]
+        with open(args.config) as f:
+            cfg = yaml.safe_load(f)
+        if cfg:
+            # Map YAML keys to Config attributes
+            _yaml_key_map = {
+                'dataset': 'DATASET',
+                'data_root': 'DATA_ROOT',
+                'data_dir': 'DATA_DIR',
+                'image_size': 'IMG_SIZE',
+                'num_classes': 'NUM_CLASSES',
+                'batch_size': 'BATCH_SIZE',
+                'learning_rate': 'LEARNING_RATE',
+                'weight_decay': 'WEIGHT_DECAY',
+                'dropout': 'DROPOUT',
+                'epochs': 'EPOCHS',
+                'mixup_alpha': 'MIXUP_ALPHA',
+                'cutmix_alpha': 'CUTMIX_ALPHA',
+                'mixup_cutmix_prob': 'MIXUP_CUTMIX_PROB',
+                'label_smoothing': 'LABEL_SMOOTHING',
+                'amp': 'USE_AMP',
+                'num_workers': 'NUM_WORKERS',
+                'checkpoint_dir': 'CHECKPOINT_DIR',
+            }
+            for key, value in cfg.items():
+                attr = _yaml_key_map.get(key, key.upper())
+                setattr(config, attr, value)
+
+    # Apply dataset-specific defaults if dataset was changed
+    if config.DATASET != Config.DATASET or args.config:
+        if config.DATASET == 'cifar100':
+            config.MEAN = (0.5071, 0.4867, 0.4408)
+            config.STD = (0.2675, 0.2565, 0.2761)
+            if not args.config:
+                config.IMG_SIZE = 32
+                config.NUM_CLASSES = 100
+        elif config.DATASET == 'coco_crops':
+            config.MEAN = (0.485, 0.456, 0.406)
+            config.STD = (0.229, 0.224, 0.225)
+            if not args.config:
+                config.IMG_SIZE = 128
+                config.NUM_CLASSES = 80
+        else:  # tiny_imagenet
+            config.MEAN = (0.4802, 0.4481, 0.3975)
+            config.STD = (0.2302, 0.2265, 0.2262)
+            if not args.config:
+                config.IMG_SIZE = 64
+                config.NUM_CLASSES = 200
+
+    # Recalculate checkpoint paths based on final dataset/checkpoint_dir
+    config.CHECKPOINT_DIR = getattr(config, 'CHECKPOINT_DIR',
+                                    f"./checkpoints/{config.DATASET}")
+    config.BEST_MODEL_PATH = f"{config.CHECKPOINT_DIR}/best_model.pth"
+    config.METRICS_PATH = f"{config.CHECKPOINT_DIR}/metrics.npz"
+    config.LATEST_CHECKPOINT_PATH = f"{config.CHECKPOINT_DIR}/latest_checkpoint.pth"
+
+    # Override config with CLI args (highest priority)
     if args.epochs:
         config.EPOCHS = args.epochs
     if args.batch_size:
@@ -729,7 +812,11 @@ def main():
     train_loader, val_loader, class_names = get_dataloaders(config)
     
     # Model
-    model = SEResInception(num_classes=config.NUM_CLASSES, dropout=config.DROPOUT)
+    model = SEResInception(
+        num_classes=config.NUM_CLASSES,
+        dropout=config.DROPOUT,
+        input_size=config.IMG_SIZE,
+    )
     model = model.to(device)
     
     # Print model info
@@ -817,7 +904,7 @@ def main():
     # Training complete
     total_time = time.time() - start_time
     print("=" * 60)
-    print(f"Training Complete!")
+    print("Training Complete!")
     print(f"Best Validation Accuracy: {best_acc:.2f}%")
     print(f"Total Training Time: {total_time/60:.1f} minutes")
     print(f"Model saved to: {config.BEST_MODEL_PATH}")

@@ -13,3 +13,6 @@ torchaudio>=2.0.0
 
 # Progress bar
 tqdm>=4.65.0
+
+# YAML config loading
+pyyaml>=6.0

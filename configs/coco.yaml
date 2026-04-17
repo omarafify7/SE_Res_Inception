@@ -1,0 +1,16 @@
+dataset: coco_crops
+data_root: "C:\\Users\\Omar\\Documents\\datasets\\coco2014"
+image_size: 128
+num_classes: 80
+batch_size: 64
+learning_rate: 0.001
+weight_decay: 0.0005
+epochs: 50
+dropout: 0.4
+mixup_alpha: 1.0
+cutmix_alpha: 1.0
+mixup_cutmix_prob: 0.5
+label_smoothing: 0.1
+amp: true
+num_workers: 12
+checkpoint_dir: "./checkpoints/coco"
