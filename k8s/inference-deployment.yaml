@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inference
+  namespace: ml-inference
+  labels:
+    app: inference
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: inference
+  template:
+    metadata:
+      labels:
+        app: inference
+    spec:
+      containers:
+        - name: inference
+          image: ml-inference:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: CHECKPOINT_PATH
+              value: "/checkpoints/best_model.pth"
+            - name: NUM_CLASSES
+              value: "200"
+            - name: DATASET
+              value: "tiny-imagenet"
+          resources:
+            requests:
+              cpu: "1"
+              memory: "2Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+              nvidia.com/gpu: 1
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          volumeMounts:
+            - name: checkpoints
+              mountPath: /checkpoints
+      volumes:
+        - name: checkpoints
+          emptyDir: {}
+          # To use a PersistentVolumeClaim instead, comment out emptyDir above
+          # and uncomment the following:
+          # persistentVolumeClaim:
+          #   claimName: checkpoints-pvc

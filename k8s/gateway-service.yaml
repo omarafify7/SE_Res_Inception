@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-service
+  namespace: ml-inference
+  labels:
+    app: gateway
+spec:
+  type: ClusterIP
+  selector:
+    app: gateway
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
