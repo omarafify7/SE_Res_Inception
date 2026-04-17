@@ -2,3 +2,37 @@ data/
 checkpoints/
 __pycache__/
 *.pyc
+
+# Local Claude Code config (personal, not project)
+.claude/
+
+# Virtualenvs / env files
+.venv/
+venv/
+.env
+.env.local
+*.env.local
+
+# Training artifacts (regenerate on demand)
+logs/
+tiny_imagenet_visualizations/outputs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Go build artifacts
+gateway/gateway
+gateway/*.exe
+
+# Terraform state (never commit)
+deploy/aws/.terraform/
+deploy/aws/*.tfstate
+deploy/aws/*.tfstate.backup
+deploy/aws/.terraform.lock.hcl
+
+# Large archive leftovers
+*.tar.gz
