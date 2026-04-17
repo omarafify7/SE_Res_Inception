@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SE-Res-Inception V2 — Architecture Explainer</title>
+    <style>
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            line-height: 1.65;
+            color: #333;
+            background: #eef2f7;
+            margin: 0;
+            padding: 20px;
+        }
+
+        article {
+            max-width: 960px;
+            margin: 0 auto;
+            background: #fff;
+            border-radius: 10px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+            overflow: hidden;
+        }
+
+        header.hero {
+            background: linear-gradient(135deg, #2c3e50 0%, #3498db 100%);
+            color: #fff;
+            padding: 50px 45px 40px;
+        }
+        header.hero h1 {
+            font-size: 2.2em;
+            margin: 0 0 10px;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+        }
+        header.hero .subtitle {
+            font-size: 1.1em;
+            opacity: 0.92;
+            margin: 0 0 25px;
+        }
+
+        .stat-row {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 15px;
+            margin-top: 25px;
+        }
+        .stat {
+            background: rgba(255, 255, 255, 0.12);
+            backdrop-filter: blur(8px);
+            padding: 14px 16px;
+            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+        }
+        .stat .value {
+            font-size: 1.6em;
+            font-weight: 700;
+            display: block;
+        }
+        .stat .label {
+            font-size: 0.85em;
+            opacity: 0.85;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        main {
+            padding: 40px 45px 20px;
+        }
+
+        h2 {
+            color: #2c3e50;
+            font-size: 1.6em;
+            margin-top: 40px;
+            margin-bottom: 15px;
+            padding-bottom: 8px;
+            border-bottom: 3px solid #3498db;
+        }
+        h3 {
+            color: #34495e;
+            font-size: 1.2em;
+            margin-top: 28px;
+            margin-bottom: 10px;
+        }
+
+        p { margin: 12px 0; }
+
+        code {
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Courier New', monospace;
+            background: #f5f5f5;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.92em;
+            color: #c0392b;
+        }
+
+        pre {
+            background: #f8f9fa;
+            border-left: 4px solid #3498db;
+            padding: 16px 20px;
+            border-radius: 4px;
+            overflow-x: auto;
+            font-size: 0.9em;
+            line-height: 1.5;
+        }
+        pre code {
+            background: none;
+            padding: 0;
+            color: #2c3e50;
+        }
+
+        .info-section,
+        .success-section,
+        .warning-section {
+            padding: 16px 22px;
+            border-radius: 6px;
+            margin: 20px 0;
+        }
+        .info-section {
+            background: #e8f4f8;
+            border-left: 4px solid #3498db;
+        }
+        .success-section {
+            background: #e8f5e9;
+            border-left: 4px solid #27ae60;
+        }
+        .warning-section {
+            background: #fff3e0;
+            border-left: 4px solid #f39c12;
+        }
+        .info-section h3, .success-section h3, .warning-section h3 {
+            margin-top: 0;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            font-size: 0.95em;
+        }
+        th, td {
+            padding: 10px 14px;
+            text-align: left;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        th {
+            background: #f5f7fa;
+            color: #2c3e50;
+            font-weight: 600;
+        }
+        tr:nth-child(even) td { background: #fafbfc; }
+        tr:hover td { background: #f0f7fd; }
+        td.highlight { background: #fff8e1 !important; font-weight: 600; color: #2c3e50; }
+
+        /* Diagram styling */
+        .diagram-container {
+            background: #fafbfc;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 25px;
+            margin: 25px 0;
+            overflow-x: auto;
+        }
+
+        .block-diagram {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.9em;
+        }
+
+        .block {
+            padding: 10px 20px;
+            border-radius: 6px;
+            min-width: 250px;
+            text-align: center;
+            border: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        .block:hover {
+            transform: scale(1.03);
+            box-shadow: 0 3px 12px rgba(0,0,0,0.08);
+        }
+        .block-input, .block-output { background: #e1f5fe; border-color: #0288d1; color: #01579b; }
+        .block-conv     { background: #fff9c4; border-color: #fbc02d; color: #795548; }
+        .block-se       { background: #f8bbd0; border-color: #e91e63; color: #880e4f; font-weight: 600; }
+        .block-pool     { background: #c8e6c9; border-color: #43a047; color: #1b5e20; }
+        .block-fc       { background: #d1c4e9; border-color: #673ab7; color: #311b92; }
+        .block-residual { background: #ffccbc; border-color: #ff5722; color: #bf360c; }
+
+        .arrow {
+            font-size: 1.4em;
+            color: #7f8c8d;
+        }
+
+        /* Branch split for Inception */
+        .branches {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+        .branch {
+            padding: 10px 15px;
+            border-radius: 6px;
+            background: #fff3e0;
+            border: 2px solid #fb8c00;
+            color: #e65100;
+            font-size: 0.85em;
+            min-width: 110px;
+            text-align: center;
+        }
+
+        /* Component cards */
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 18px;
+            margin: 25px 0;
+        }
+        .card {
+            background: #fff;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 20px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 18px rgba(0,0,0,0.08);
+            border-color: #3498db;
+        }
+        .card .card-icon {
+            font-size: 1.8em;
+            margin-bottom: 6px;
+        }
+        .card h4 {
+            margin: 5px 0 8px;
+            color: #2c3e50;
+            font-size: 1.05em;
+        }
+        .card p {
+            margin: 0;
+            font-size: 0.92em;
+            color: #555;
+        }
+
+        /* Result cards */
+        .result-card {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 14px 20px;
+            background: #f8f9fa;
+            border-left: 4px solid #3498db;
+            border-radius: 4px;
+            margin: 8px 0;
+        }
+        .result-card.winner {
+            background: linear-gradient(90deg, #fff8e1 0%, #fffbf0 100%);
+            border-left-color: #f39c12;
+            box-shadow: 0 2px 6px rgba(243, 156, 18, 0.15);
+        }
+        .result-card .model-name { font-weight: 600; color: #2c3e50; font-size: 1.02em; }
+        .result-card .model-name .crown { color: #f39c12; margin-right: 6px; }
+        .result-card .model-metrics {
+            display: flex;
+            gap: 22px;
+            font-size: 0.9em;
+            color: #555;
+        }
+        .result-card .metric-val { font-weight: 600; color: #2c3e50; }
+
+        /* Collapsible */
+        details {
+            background: #f8f9fa;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 12px 18px;
+            margin: 15px 0;
+            cursor: pointer;
+        }
+        details summary {
+            font-weight: 600;
+            color: #2c3e50;
+            cursor: pointer;
+            list-style: none;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        details summary::before {
+            content: "▶";
+            font-size: 0.8em;
+            color: #3498db;
+            transition: transform 0.2s;
+        }
+        details[open] summary::before {
+            transform: rotate(90deg);
+        }
+        details > *:not(summary) { margin-top: 12px; }
+
+        /* Formula box */
+        .formula {
+            background: #fff;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 14px 20px;
+            text-align: center;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 1em;
+            margin: 15px 0;
+            color: #2c3e50;
+        }
+
+        footer {
+            background: #f5f7fa;
+            padding: 25px 45px;
+            margin-top: 40px;
+            border-top: 1px solid #e0e0e0;
+            font-size: 0.9em;
+            color: #666;
+        }
+        footer a {
+            color: #3498db;
+            text-decoration: none;
+        }
+        footer a:hover { text-decoration: underline; }
+
+        /* Small SVG diagrams fit nicely */
+        svg.diagram { max-width: 100%; height: auto; display: block; margin: 15px auto; }
+
+        @media (max-width: 640px) {
+            header.hero { padding: 35px 25px 30px; }
+            header.hero h1 { font-size: 1.7em; }
+            main { padding: 25px 25px 15px; }
+            footer { padding: 20px 25px; }
+            .model-metrics { flex-direction: column; gap: 4px !important; }
+        }
+    </style>
+</head>
+<body>
+<article>
+    <header class="hero">
+        <h1>SE-Res-Inception V2</h1>
+        <p class="subtitle">A custom CNN fusing Inception, Residual, and Squeeze-and-Excitation attention — trained from scratch on CIFAR-100.</p>
+
+        <div class="stat-row">
+            <div class="stat">
+                <span class="value">8.86M</span>
+                <span class="label">Parameters</span>
+            </div>
+            <div class="stat">
+                <span class="value">78.85%</span>
+                <span class="label">Top-1 Accuracy</span>
+            </div>
+            <div class="stat">
+                <span class="value">+18.6 pp</span>
+                <span class="label">vs. ResNet-18</span>
+            </div>
+            <div class="stat">
+                <span class="value">7.92 ms</span>
+                <span class="label">GPU Inference</span>
+            </div>
+        </div>
+    </header>
+
+    <main>
+
+        <!-- =================== THE PROBLEM =================== -->
+        <h2>The Problem</h2>
+        <p>CIFAR-100 is a notoriously difficult image classification benchmark: 100 fine-grained categories (<em>apple</em>, <em>bear</em>, <em>bicycle</em>…) with only <strong>500 training images per class</strong> at 32×32 resolution. At this low-data regime, standard CNNs overfit aggressively, and reaching the high 70s top-1 accuracy requires deliberate architectural and regularization choices.</p>
+
+        <p>Rather than fine-tuning a pretrained ImageNet model (transfer learning), this project asks: <em>can we design an efficient CNN from first principles that beats ResNet-18 and GoogLeNet on CIFAR-100, trained from scratch, under identical conditions?</em></p>
+
+        <section class="success-section">
+            <h3>✅ Answer</h3>
+            <p>Yes. A custom 8.86M-parameter network — fusing three well-established ideas — achieves <strong>78.85% top-1</strong>, outperforming both baselines by a substantial margin at comparable or fewer parameters.</p>
+        </section>
+
+        <!-- =================== THREE IDEAS =================== -->
+        <h2>Three Ideas, One Architecture</h2>
+        <p>SE-Res-Inception V2 composes three architectural mechanisms, each targeting a different failure mode of vanilla CNNs:</p>
+
+        <div class="card-grid">
+            <div class="card">
+                <div class="card-icon">🔀</div>
+                <h4>Inception Modules</h4>
+                <p>Four parallel branches (1×1, 3×3, 5×5 convolutions and pooling) extract features at multiple receptive-field scales simultaneously, then concatenate. The network decides <em>which scale matters</em> per channel.</p>
+            </div>
+            <div class="card">
+                <div class="card-icon">🔗</div>
+                <h4>Residual Connections</h4>
+                <p>Each block adds its output to the (projected) input. Gradients flow unobstructed through skip connections, letting us stack 9 Inception blocks deep without vanishing-gradient degradation.</p>
+            </div>
+            <div class="card">
+                <div class="card-icon">🎯</div>
+                <h4>Squeeze-and-Excitation</h4>
+                <p>A tiny learned gate computes per-channel importance weights (global average pool → FC → sigmoid) and rescales each channel. This lets the network <em>dynamically amplify informative channels</em>.</p>
+            </div>
+        </div>
+
+        <!-- =================== SE BLOCK =================== -->
+        <h2>The SE Block: Channel Attention Explained</h2>
+        <p>The Squeeze-and-Excitation mechanism is the innovation that ties this architecture together. It's a lightweight <strong>attention module</strong> that recalibrates channels based on their global importance:</p>
+
+        <div class="diagram-container">
+            <svg class="diagram" viewBox="0 0 780 220" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+                        <polygon points="0 0, 10 5, 0 10" fill="#7f8c8d"/>
+                    </marker>
+                </defs>
+                <!-- input -->
+                <rect x="10" y="70" width="120" height="80" rx="6" fill="#e1f5fe" stroke="#0288d1" stroke-width="2"/>
+                <text x="70" y="105" text-anchor="middle" font-size="13" fill="#01579b" font-weight="600">Input</text>
+                <text x="70" y="125" text-anchor="middle" font-size="11" fill="#01579b">(C, H, W)</text>
+
+                <!-- squeeze -->
+                <line x1="130" y1="110" x2="170" y2="110" stroke="#7f8c8d" stroke-width="2" marker-end="url(#arrow)"/>
+                <rect x="175" y="80" width="130" height="60" rx="6" fill="#fff9c4" stroke="#fbc02d" stroke-width="2"/>
+                <text x="240" y="105" text-anchor="middle" font-size="12" fill="#795548" font-weight="600">Squeeze</text>
+                <text x="240" y="123" text-anchor="middle" font-size="10" fill="#795548">GlobalAvgPool → (C,)</text>
+
+                <!-- fc1 -->
+                <line x1="305" y1="110" x2="340" y2="110" stroke="#7f8c8d" stroke-width="2" marker-end="url(#arrow)"/>
+                <rect x="345" y="80" width="120" height="60" rx="6" fill="#fff9c4" stroke="#fbc02d" stroke-width="2"/>
+                <text x="405" y="105" text-anchor="middle" font-size="12" fill="#795548" font-weight="600">Excite (FC)</text>
+                <text x="405" y="123" text-anchor="middle" font-size="10" fill="#795548">C → C/16 → C</text>
+
+                <!-- sigmoid -->
+                <line x1="465" y1="110" x2="500" y2="110" stroke="#7f8c8d" stroke-width="2" marker-end="url(#arrow)"/>
+                <rect x="505" y="80" width="120" height="60" rx="6" fill="#f8bbd0" stroke="#e91e63" stroke-width="2"/>
+                <text x="565" y="105" text-anchor="middle" font-size="12" fill="#880e4f" font-weight="600">Sigmoid</text>
+                <text x="565" y="123" text-anchor="middle" font-size="10" fill="#880e4f">channel weights ∈ [0,1]</text>
+
+                <!-- multiply -->
+                <line x1="625" y1="110" x2="655" y2="110" stroke="#7f8c8d" stroke-width="2" marker-end="url(#arrow)"/>
+                <rect x="660" y="80" width="110" height="60" rx="6" fill="#ffccbc" stroke="#ff5722" stroke-width="2"/>
+                <text x="715" y="105" text-anchor="middle" font-size="12" fill="#bf360c" font-weight="600">Scale</text>
+                <text x="715" y="123" text-anchor="middle" font-size="10" fill="#bf360c">× input channels</text>
+
+                <!-- skip connection from input to multiply -->
+                <path d="M 70 70 Q 70 30 700 30 Q 720 30 720 80" fill="none" stroke="#7f8c8d" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#arrow)"/>
+                <text x="400" y="22" text-anchor="middle" font-size="10" fill="#7f8c8d" font-style="italic">original input (skip)</text>
+            </svg>
+        </div>
+
+        <p>The key insight: instead of treating all channels equally, SE learns a small MLP that outputs per-channel multipliers. If channel 23 is "edge-like features pointing left," the SE block can dial it up or down based on <em>what's globally in the image</em>. The entire module adds less than 1% to parameter count but provides measurable accuracy gains.</p>
+
+        <div class="formula">
+            SE(x) = x ⊙ σ(W<sub>2</sub> · ReLU(W<sub>1</sub> · GAP(x)))
+        </div>
+
+        <!-- =================== RES-INCEPTION BLOCK =================== -->
+        <h2>Anatomy of a ResInceptionBlock</h2>
+        <p>The core building block stacks 9 times throughout the network. Here's what happens to data passing through a single block:</p>
+
+        <div class="diagram-container">
+            <div class="block-diagram">
+                <div class="block block-input">Input: (B, C_in, H, W)</div>
+                <div class="arrow">↓</div>
+
+                <div class="branches">
+                    <div class="branch">
+                        Branch 1<br/>
+                        <small>1×1 conv</small>
+                    </div>
+                    <div class="branch">
+                        Branch 2<br/>
+                        <small>1×1 → 3×3</small>
+                    </div>
+                    <div class="branch">
+                        Branch 3<br/>
+                        <small>1×1 → 5×5</small>
+                    </div>
+                    <div class="branch">
+                        Branch 4<br/>
+                        <small>MaxPool → 1×1</small>
+                    </div>
+                </div>
+
+                <div class="arrow">↓</div>
+                <div class="block block-conv">Concat along channel axis</div>
+                <div class="arrow">↓</div>
+                <div class="block block-se">SE Block (channel attention)</div>
+                <div class="arrow">↓</div>
+                <div class="block block-conv">Dropout2d → DropPath</div>
+                <div class="arrow">↓</div>
+                <div class="block block-residual">+ Residual (projected if needed)</div>
+                <div class="arrow">↓</div>
+                <div class="block block-output">Output: (B, C_out, H, W)</div>
+            </div>
+        </div>
+
+        <section class="info-section">
+            <h3>ℹ️ Why SE <em>after</em> concatenation?</h3>
+            <p>A natural alternative is to apply SE per branch <em>before</em> concat. Putting it <strong>after</strong> concat is cheaper (one SE block per Inception, not four) and lets attention operate across all scales simultaneously — the gate can amplify the 3×3 output while suppressing the 5×5, or vice versa, as a single cross-scale decision.</p>
+        </section>
+
+        <!-- =================== FULL NETWORK =================== -->
+        <h2>Full Network Progression</h2>
+        <p>Nine ResInceptionBlocks organize into four stages. Spatial resolution halves at each stage transition; channel count roughly doubles:</p>
+
+        <table>
+            <thead>
+                <tr>
+                    <th>Stage</th>
+                    <th>Layer</th>
+                    <th>Spatial</th>
+                    <th>Channels</th>
+                    <th>Notes</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td>Stem</td>
+                    <td>Conv 3×3 + BN + ReLU</td>
+                    <td>32×32</td>
+                    <td>64</td>
+                    <td>stride=1 (preserves CIFAR resolution)</td>
+                </tr>
+                <tr>
+                    <td rowspan="2">Stage 1</td>
+                    <td>Inception 1</td>
+                    <td>32×32</td>
+                    <td>256</td>
+                    <td rowspan="2">Low-level feature expansion</td>
+                </tr>
+                <tr>
+                    <td>Inception 2</td>
+                    <td>32×32</td>
+                    <td>480</td>
+                </tr>
+                <tr>
+                    <td>Pool</td>
+                    <td>MaxPool 3×3, s=2</td>
+                    <td>16×16</td>
+                    <td>480</td>
+                    <td>First downsampling</td>
+                </tr>
+                <tr>
+                    <td rowspan="2">Stage 2</td>
+                    <td>Inception 3</td>
+                    <td>16×16</td>
+                    <td>512</td>
+                    <td rowspan="2">Mid-level features</td>
+                </tr>
+                <tr>
+                    <td>Inception 4</td>
+                    <td>16×16</td>
+                    <td>512</td>
+                </tr>
+                <tr>
+                    <td rowspan="3">Stage 3</td>
+                    <td>Inception 5</td>
+                    <td>16×16</td>
+                    <td>528</td>
+                    <td rowspan="3">Deepest intermediate stage</td>
+                </tr>
+                <tr>
+                    <td>Inception 6</td>
+                    <td>16×16</td>
+                    <td>832</td>
+                </tr>
+                <tr>
+                    <td>Inception 7</td>
+                    <td>16×16</td>
+                    <td>832</td>
+                </tr>
+                <tr>
+                    <td>Pool</td>
+                    <td>MaxPool 3×3, s=2</td>
+                    <td>8×8</td>
+                    <td>832</td>
+                    <td>Final downsampling</td>
+                </tr>
+                <tr>
+                    <td rowspan="2">Stage 4</td>
+                    <td>Inception 8</td>
+                    <td>8×8</td>
+                    <td>832</td>
+                    <td rowspan="2">Semantic features</td>
+                </tr>
+                <tr>
+                    <td>Inception 9</td>
+                    <td>8×8</td>
+                    <td>1024</td>
+                </tr>
+                <tr class="highlight" style="background:#fff8e1;">
+                    <td>Head</td>
+                    <td>GAP → Dropout(0.5) → FC</td>
+                    <td>1×1</td>
+                    <td>100</td>
+                    <td>Classification output</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <!-- =================== REGULARIZATION =================== -->
+        <h2>The Regularization Stack</h2>
+        <p>Five regularization mechanisms stack to prevent overfitting in the low-data CIFAR-100 regime:</p>
+
+        <div class="card-grid">
+            <div class="card">
+                <h4>🎨 Mixup</h4>
+                <p>Blends two training images (and their labels) with a random mixing coefficient λ. Forces the network to learn smoother decision boundaries between classes.</p>
+            </div>
+            <div class="card">
+                <h4>✂️ CutMix</h4>
+                <p>Cuts a rectangular region from image A and pastes it onto image B; labels mix proportionally to patch area. Encourages localized reasoning rather than global-average cheating.</p>
+            </div>
+            <div class="card">
+                <h4>🏷️ Label Smoothing</h4>
+                <p>Replaces hard one-hot targets (1.0 for true class, 0.0 elsewhere) with soft targets (0.9 for true, 0.001 elsewhere). Prevents the network from becoming over-confident.</p>
+            </div>
+            <div class="card">
+                <h4>🪂 DropPath (Stochastic Depth)</h4>
+                <p>During training, randomly drops the entire residual branch (block output → identity only) with a probability that increases linearly across depth. Forces robust features that survive block dropout.</p>
+            </div>
+            <div class="card">
+                <h4>💧 Dropout2d</h4>
+                <p>Inside each Inception block, zeroes entire feature maps with probability 0.2 after SE. Prevents co-adaptation between channels.</p>
+            </div>
+            <div class="card">
+                <h4>⚖️ Weight Decay</h4>
+                <p>L2 penalty of 5e-4 on all weights via AdamW. Keeps weight magnitudes small, acting as a prior toward simpler solutions.</p>
+            </div>
+        </div>
+
+        <!-- =================== TRAINING RECIPE =================== -->
+        <h2>Training Recipe</h2>
+
+        <pre><code>Optimizer:    AdamW (lr=1e-3, weight_decay=5e-4)
+LR schedule:  Cosine annealing over 100 epochs
+Batch size:   80
+Precision:    Mixed (FP16 forward/backward, FP32 master weights)
+Augmentation: RandomCrop(32, padding=4) + RandomHorizontalFlip
+              50% of batches: Mixup(α=1.0) or CutMix(α=1.0)
+Loss:         SoftTargetCrossEntropy with label_smoothing=0.1</code></pre>
+
+        <p>These exact hyperparameters are used for <strong>all three</strong> networks (SE-Res-Inception, ResNet-18, GoogLeNet) to make the comparison rigorously fair — the only variable is the architecture.</p>
+
+        <!-- =================== RESULTS =================== -->
+        <h2>Results: Fair Comparison on CIFAR-100</h2>
+
+        <div class="result-card winner">
+            <div class="model-name"><span class="crown">🏆</span>SE-Res-Inception V2</div>
+            <div class="model-metrics">
+                <span>Params: <span class="metric-val">8.86M</span></span>
+                <span>Top-1: <span class="metric-val">78.85%</span></span>
+                <span>Top-5: <span class="metric-val">95.15%</span></span>
+                <span>GPU: <span class="metric-val">7.92 ms</span></span>
+            </div>
+        </div>
+        <div class="result-card">
+            <div class="model-name">ResNet-18</div>
+            <div class="model-metrics">
+                <span>Params: <span class="metric-val">11.23M</span></span>
+                <span>Top-1: <span class="metric-val">60.25%</span></span>
+                <span>Top-5: <span class="metric-val">83.32%</span></span>
+                <span>GPU: <span class="metric-val">2.05 ms</span></span>
+            </div>
+        </div>
+        <div class="result-card">
+            <div class="model-name">GoogLeNet</div>
+            <div class="model-metrics">
+                <span>Params: <span class="metric-val">5.70M</span></span>
+                <span>Top-1: <span class="metric-val">58.17%</span></span>
+                <span>Top-5: <span class="metric-val">83.14%</span></span>
+                <span>GPU: <span class="metric-val">5.81 ms</span></span>
+            </div>
+        </div>
+
+        <section class="info-section">
+            <h3>ℹ️ Reading this table</h3>
+            <p>SE-Res-Inception beats ResNet-18 by <strong>+18.6 pp top-1</strong> while using <strong>21% fewer parameters</strong>. It's slower per-inference (7.92 ms vs. 2.05 ms) because Inception branches don't vectorize as cleanly as ResNet's serial convolutions — a classic accuracy-vs-latency trade-off. For latency-critical deployments, ResNet still wins; for accuracy-critical ones, the custom architecture pulls ahead.</p>
+        </section>
+
+        <!-- =================== GRADCAM =================== -->
+        <h2>Interpretability: Where Does the Model Look?</h2>
+        <p>Grad-CAM visualizes which image regions most influenced the classification decision. By hooking into the output of the final Inception block (<code>model.inception9</code>), we can see the <strong>post-SE-attention spatial focus</strong>:</p>
+
+        <section class="success-section">
+            <h3>✅ When predictions are correct</h3>
+            <p>Attention concentrates tightly on semantically meaningful object regions — the face of a seal, the petals of a poppy, the silhouette of a bee. This is visual evidence that the SE block has correctly identified the informative channels.</p>
+        </section>
+
+        <section class="warning-section">
+            <h3>⚠️ When predictions are wrong</h3>
+            <p>Attention is typically diffuse or mislocalized — scattered across background clutter, or fixated on non-discriminative features. The SE block's channel recalibration has latched onto the wrong signal; even a confident misprediction carries this interpretability signature.</p>
+        </section>
+
+        <!-- =================== SCALING =================== -->
+        <h2>Does It Scale? (Tiny ImageNet + COCO)</h2>
+        <p>The same architecture — with a single-line stem adaptation for larger inputs — trains on three datasets of progressively larger scale:</p>
+
+        <table>
+            <thead>
+                <tr><th>Dataset</th><th>Input</th><th>Classes</th><th>Stem</th></tr>
+            </thead>
+            <tbody>
+                <tr><td>CIFAR-100</td><td>32×32</td><td>100</td><td>Conv 3×3, stride=1</td></tr>
+                <tr><td>Tiny ImageNet</td><td>64×64</td><td>200</td><td>Conv 3×3, stride=1</td></tr>
+                <tr><td>COCO-Crops</td><td>128×128</td><td>80</td><td>Conv 7×7, s=2 → MaxPool 3×3, s=2</td></tr>
+            </tbody>
+        </table>
+
+        <details>
+            <summary>Why the stem changes for 128×128</summary>
+            <p>The body of the network was designed for 32×32 feature maps. Feeding it 128×128 directly inflates every downstream activation by 16× (128² / 32²), which at batch size 64 exceeds 16 GB of VRAM — the model would silently spill to system RAM and slow down 300×. The ImageNet-style stem downsamples the input by 4× before the Inception blocks, bringing spatial dimensions back to the regime the body was designed for.</p>
+            <pre><code>if input_size <= 64:
+    self.stem = nn.Sequential(  # CIFAR / Tiny ImageNet
+        nn.Conv2d(3, 64, 3, stride=1, padding=1, bias=False),
+        nn.BatchNorm2d(64), nn.ReLU(inplace=True),
+    )
+else:                           # COCO / ImageNet-scale
+    self.stem = nn.Sequential(
+        nn.Conv2d(3, 64, 7, stride=2, padding=3, bias=False),
+        nn.BatchNorm2d(64), nn.ReLU(inplace=True),
+        nn.MaxPool2d(3, stride=2, padding=1),
+    )</code></pre>
+        </details>
+
+        <!-- =================== DEPLOYMENT =================== -->
+        <h2>Production Deployment</h2>
+        <p>The trained model is served behind a two-service microservice architecture designed for cloud-native deployment:</p>
+
+        <div class="diagram-container">
+            <svg class="diagram" viewBox="0 0 840 200" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                    <marker id="arr2" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+                        <polygon points="0 0, 10 5, 0 10" fill="#7f8c8d"/>
+                    </marker>
+                </defs>
+
+                <rect x="10" y="70" width="130" height="70" rx="8" fill="#e8f5e9" stroke="#43a047" stroke-width="2"/>
+                <text x="75" y="100" text-anchor="middle" font-size="13" fill="#1b5e20" font-weight="600">Client</text>
+                <text x="75" y="118" text-anchor="middle" font-size="10" fill="#1b5e20">curl / frontend</text>
+
+                <line x1="140" y1="105" x2="185" y2="105" stroke="#7f8c8d" stroke-width="2" marker-end="url(#arr2)"/>
+
+                <rect x="190" y="60" width="200" height="90" rx="8" fill="#fff3e0" stroke="#fb8c00" stroke-width="2"/>
+                <text x="290" y="88" text-anchor="middle" font-size="13" fill="#e65100" font-weight="600">Go/Fiber Gateway</text>
+                <text x="290" y="107" text-anchor="middle" font-size="10" fill="#e65100">POST /api/v1/classify</text>
+                <text x="290" y="122" text-anchor="middle" font-size="10" fill="#e65100">MIME sniff · size limit</text>
+                <text x="290" y="137" text-anchor="middle" font-size="10" fill="#e65100">stateless · horizontal scale</text>
+
+                <line x1="390" y1="105" x2="445" y2="105" stroke="#7f8c8d" stroke-width="2" marker-end="url(#arr2)"/>
+                <text x="418" y="95" text-anchor="middle" font-size="9" fill="#7f8c8d">internal network</text>
+
+                <rect x="450" y="60" width="200" height="90" rx="8" fill="#e1f5fe" stroke="#0288d1" stroke-width="2"/>
+                <text x="550" y="88" text-anchor="middle" font-size="13" fill="#01579b" font-weight="600">Python Inference</text>
+                <text x="550" y="107" text-anchor="middle" font-size="10" fill="#01579b">FastAPI · GPU</text>
+                <text x="550" y="122" text-anchor="middle" font-size="10" fill="#01579b">POST /internal/predict</text>
+                <text x="550" y="137" text-anchor="middle" font-size="10" fill="#01579b">internal-only</text>
+
+                <line x1="650" y1="105" x2="695" y2="105" stroke="#7f8c8d" stroke-width="2" marker-end="url(#arr2)"/>
+
+                <rect x="700" y="70" width="130" height="70" rx="8" fill="#f8bbd0" stroke="#e91e63" stroke-width="2"/>
+                <text x="765" y="100" text-anchor="middle" font-size="13" fill="#880e4f" font-weight="600">RTX GPU</text>
+                <text x="765" y="118" text-anchor="middle" font-size="10" fill="#880e4f">CUDA 12.8 runtime</text>
+            </svg>
+        </div>
+
+        <div class="card-grid">
+            <div class="card">
+                <div class="card-icon">🚢</div>
+                <h4>Docker Compose</h4>
+                <p>Two services on an <code>ml-net</code> bridge. GPU device reservation for inference; multi-stage alpine build (~15MB) for gateway.</p>
+            </div>
+            <div class="card">
+                <div class="card-icon">☸️</div>
+                <h4>Kubernetes</h4>
+                <p>Deployments with <code>nvidia.com/gpu: 1</code> resource request, internal ClusterIP for inference, nginx Ingress for gateway, HPA targeting 70% CPU.</p>
+            </div>
+            <div class="card">
+                <div class="card-icon">☁️</div>
+                <h4>AWS Terraform</h4>
+                <p>VPC + ECS mixed Fargate/EC2 cluster + ALB. Gateway on Fargate (serverless, cheap); inference on g6.xlarge (L4 GPU) spot instance.</p>
+            </div>
+        </div>
+
+        <!-- =================== LESSONS =================== -->
+        <h2>Engineering Takeaways</h2>
+
+        <details>
+            <summary>Silent performance degradation is the worst failure mode</summary>
+            <p>During COCO training, the model initially ran 300× slower than expected — without any error message. The root cause was the model's activation memory at 128×128 (33 GB) exceeding the 16 GB VRAM, and PyTorch silently spilling to system RAM via Windows unified memory. A crash would have been easier to debug. Lesson: for any new <code>(model, input_size, batch_size)</code> combination, benchmark in isolation and instrument peak memory explicitly before committing to multi-hour training.</p>
+        </details>
+
+        <details>
+            <summary>Fair comparisons require discipline</summary>
+            <p>The shortcut would be to evaluate against pretrained ImageNet baselines, but that's comparing "model trained from scratch on 50K images" vs. "model pretrained on 1.2M images then fine-tuned." Running baselines from scratch with identical hyperparameters cost 1.5 hours of GPU time and produced a defensible claim.</p>
+        </details>
+
+        <details>
+            <summary>Hardware-software compatibility check first</summary>
+            <p>The RTX 5070 Ti (Blackwell, SM_120) is incompatible with PyTorch stable builds through 2.6.x because those wheels don't include SM_120 CUDA kernels. This manifests only at runtime, not install time. Lesson: before any ML work on new hardware, verify with <code>torch.randn(2,3).cuda().sum()</code>. If it fails, install the nightly cu128 wheels.</p>
+        </details>
+
+        <details>
+            <summary>Microservices aren't free — but they earn the cloud story</summary>
+            <p>Splitting the single FastAPI server into Python inference + Go gateway added complexity: service discovery, cross-process error handling, healthchecks, <code>depends_on</code> orchestration. The payoff is a clear cloud-native architecture: CPU-heavy gateway on cheap Fargate, GPU inference on a separate EC2 instance, independently scalable. That separation is the main sell for platform-engineering roles.</p>
+        </details>
+
+    </main>
+
+    <footer>
+        <p><strong>Source code:</strong> <a href="https://github.com/omaradelafify/se-res-inception" target="_blank" rel="noopener">github.com/omaradelafify/se-res-inception</a></p>
+        <p><strong>Author:</strong> Omar Afify · April 2026</p>
+        <p><strong>Related files in this repository:</strong></p>
+        <ul>
+            <li><code>model.py</code> — <code>SEResInception</code> implementation (9 ResInceptionBlocks, adaptive stem)</li>
+            <li><code>train.py</code> — unified training loop (CIFAR-100, Tiny ImageNet, COCO)</li>
+            <li><code>baselines/train_baseline.py</code> — ResNet-18 / GoogLeNet fair-comparison trainers</li>
+            <li><code>inference/main.py</code> — FastAPI internal inference service</li>
+            <li><code>gateway/main.go</code> — Go/Fiber public gateway</li>
+            <li><code>docs/PORTFOLIO_BUILD.md</code> — complete build documentation</li>
+        </ul>
+    </footer>
+</article>
+</body>
+</html>
