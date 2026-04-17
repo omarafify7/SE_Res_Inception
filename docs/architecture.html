@@ -686,15 +686,29 @@ Loss:         SoftTargetCrossEntropy with label_smoothing=0.1</code></pre>
         <h2>Interpretability: Where Does the Model Look?</h2>
         <p>Grad-CAM visualizes which image regions most influenced the classification decision. By hooking into the output of the final Inception block (<code>model.inception9</code>), we can see the <strong>post-SE-attention spatial focus</strong>:</p>
 
+        <figure style="margin:25px 0; text-align:center;">
+            <img src="../outputs/coco_gradcam_gallery.png"
+                 alt="Grad-CAM attention maps on COCO-Crops across 8 object categories"
+                 style="max-width:100%; height:auto; border-radius:8px; box-shadow:0 4px 14px rgba(0,0,0,0.12);" />
+            <figcaption style="color:#666; font-size:0.9em; margin-top:10px; font-style:italic;">
+                Grad-CAM on COCO-Crops (128×128). Each pair shows the original crop and the attention heatmap from the final SE-attention block. Confidence scores shown above each image.
+            </figcaption>
+        </figure>
+
         <section class="success-section">
             <h3>✅ When predictions are correct</h3>
-            <p>Attention concentrates tightly on semantically meaningful object regions — the face of a seal, the petals of a poppy, the silhouette of a bee. This is visual evidence that the SE block has correctly identified the informative channels.</p>
+            <p>Attention concentrates tightly on semantically meaningful object regions — the head and ears of a dog, the body mass of an elephant, the topping texture of a pizza, the pose of a tennis player, the radial spokes of an umbrella. This is visual evidence that the SE block has correctly identified the informative channels. At 128×128 COCO resolution, the heatmaps resolve much finer object geometry than at 32×32 CIFAR — the attention maps become <em>interpretable</em>, tracking actual object structure rather than coarse region bias.</p>
         </section>
 
         <section class="warning-section">
             <h3>⚠️ When predictions are wrong</h3>
             <p>Attention is typically diffuse or mislocalized — scattered across background clutter, or fixated on non-discriminative features. The SE block's channel recalibration has latched onto the wrong signal; even a confident misprediction carries this interpretability signature.</p>
         </section>
+
+        <details>
+            <summary>Why resolution matters for interpretability</summary>
+            <p>At 32×32 (CIFAR), each Grad-CAM "cell" represents a 4×4 pixel block of the original image — too coarse to distinguish object parts from background. At 128×128 (COCO), each Grad-CAM cell covers a 16×16 pixel region, revealing where the model locates things like <em>the dog's face</em> vs. <em>the dog's legs</em> within the same image. Higher-resolution inputs make attention visualization a real diagnostic tool rather than a qualitative illustration.</p>
+        </details>
 
         <!-- =================== SCALING =================== -->
         <h2>Does It Scale? (Tiny ImageNet + COCO)</h2>
